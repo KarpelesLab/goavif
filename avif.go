@@ -80,13 +80,56 @@ func Decode(r io.Reader) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = decoder.Decode(itemBytes, seq)
+	frame, err := decoder.Decode(itemBytes, seq)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
-	// If/when Decode returns nil, we will construct an image.Image from the
-	// returned Frame. Until then this branch is unreachable.
-	return nil, fmt.Errorf("%w: image assembly", ErrUnsupported)
+	return frameToImage(frame)
+}
+
+// frameToImage builds an [image.Image] from a decoded [decoder.Frame]. For
+// 8-bit frames with populated YUV planes it returns a YCbCr (untouched
+// planes) to minimize copies. Callers needing RGB should use
+// [colorspace.ConvertPlanar420] on the YCbCr planes directly.
+func frameToImage(f *decoder.Frame) (image.Image, error) {
+	if f == nil {
+		return nil, fmt.Errorf("goavif: nil frame")
+	}
+	if f.BitDepth != 8 {
+		return nil, fmt.Errorf("goavif: only 8-bit output implemented, frame is %d-bit", f.BitDepth)
+	}
+	if f.Monochrome {
+		gray := image.NewGray(image.Rect(0, 0, f.Width, f.Height))
+		if len(f.Y) != 0 {
+			copy(gray.Pix, f.Y)
+		}
+		return gray, nil
+	}
+	// Planar YUV 4:2:0 is the only chroma sampling in the still-image AVIF
+	// baseline we support today. 4:2:2 and 4:4:4 land with Phase 3.
+	sub := image.YCbCrSubsampleRatio420
+	switch {
+	case f.Subsampling.X == 1 && f.Subsampling.Y == 1:
+		sub = image.YCbCrSubsampleRatio420
+	case f.Subsampling.X == 1 && f.Subsampling.Y == 0:
+		sub = image.YCbCrSubsampleRatio422
+	case f.Subsampling.X == 0 && f.Subsampling.Y == 0:
+		sub = image.YCbCrSubsampleRatio444
+	default:
+		return nil, fmt.Errorf("goavif: unsupported chroma subsampling %d/%d",
+			f.Subsampling.X, f.Subsampling.Y)
+	}
+	img := image.NewYCbCr(image.Rect(0, 0, f.Width, f.Height), sub)
+	if len(f.Y) == len(img.Y) {
+		copy(img.Y, f.Y)
+	}
+	if len(f.U) == len(img.Cb) {
+		copy(img.Cb, f.U)
+	}
+	if len(f.V) == len(img.Cr) {
+		copy(img.Cr, f.V)
+	}
+	return img, nil
 }
 
 // extractSequenceHeader finds the av1C property associated with itemID and
