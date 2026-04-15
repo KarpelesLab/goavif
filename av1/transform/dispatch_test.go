@@ -57,8 +57,19 @@ func TestFlipadst4Reverses(t *testing.T) {
 	}
 }
 
-func TestUnsupportedReturnsNil(t *testing.T) {
-	if RowOp(DctDct, Tx16x16) != nil {
-		t.Errorf("RowOp(DctDct, 16x16) should be nil until IDCT16 lands")
+func TestDctDct16x16RoundTrip(t *testing.T) {
+	// 16x16 DctDct should now dispatch to IDCT16 on both axes.
+	op := RowOp(DctDct, Tx16x16)
+	if op == nil {
+		t.Fatalf("RowOp(DctDct, 16x16) = nil; expected IDCT16")
+	}
+	if ColOp(DctDct, Tx16x16) == nil {
+		t.Fatalf("ColOp(DctDct, 16x16) = nil")
+	}
+}
+
+func TestUnsupported32x32ReturnsNil(t *testing.T) {
+	if RowOp(DctDct, Tx32x32) != nil {
+		t.Errorf("RowOp(DctDct, 32x32) should be nil until IDCT32 lands")
 	}
 }
