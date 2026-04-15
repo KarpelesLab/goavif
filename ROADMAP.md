@@ -35,9 +35,10 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
       10/12-bit tables pending
 - [ ] `av1/decoder`: package skeleton landed — parses OBUs through frame header,
       returns `ErrPixelDecodeUnimplemented` for the pixel path
-- [ ] Partition tree decode + tile-group driver
-- [ ] Residual coefficient decoding + reconstruction pipeline
-- [ ] Deblocking loop filter
+- [ ] Partition tree — geometry walker landed; bitstream-driven decoder pending
+- [ ] Residual coefficient decoding
+- [ ] Reconstruction — ReconstructBlock helper landed; needs integration
+- [ ] Deblocking loop filter — 4-tap narrow done; 8/14-tap pending
 - [ ] CDEF (constrained directional enhancement filter)
 - [ ] Top-level `goavif.Decode` → `image.Image` for 8-bit 4:2:0 still AVIF
 - [ ] Golden tests vs dav1d on AOM intra-only test vectors
