@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"io"
 
+	"github.com/KarpelesLab/goavif/av1/decoder"
+	"github.com/KarpelesLab/goavif/av1/obu"
 	"github.com/KarpelesLab/goavif/isobmff"
 )
 
@@ -49,14 +51,101 @@ const (
 
 // Decode reads an AVIF image from r and returns it as an [image.Image].
 //
-// Not implemented yet; returns [ErrUnsupported]. The container path works
-// today — see [DecodeConfig] — but the AV1 decoder is landing in a later
-// milestone (Phase 2 of the implementation plan).
+// The container and AV1 header parsing are implemented today. Pixel
+// reconstruction is still landing; callers that hit an unimplemented code
+// path receive an error wrapping [ErrUnsupported] or
+// [decoder.ErrPixelDecodeUnimplemented].
 func Decode(r io.Reader) (image.Image, error) {
-	if _, err := DecodeConfig(r); err != nil {
+	data, err := io.ReadAll(r)
+	if err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("%w: AV1 decoder pending", ErrUnsupported)
+	ct, err := isobmff.ParseContainer(data)
+	if err != nil {
+		return nil, err
+	}
+	if !ct.Ftyp.HasBrand("avif") && !ct.Ftyp.HasBrand("avis") {
+		return nil, fmt.Errorf("goavif: ftyp has no avif/avis brand")
+	}
+	primaryID := ct.PrimaryItemID()
+	if primaryID == 0 {
+		return nil, fmt.Errorf("goavif: no primary item")
+	}
+
+	seq, err := extractSequenceHeader(ct, primaryID)
+	if err != nil {
+		return nil, err
+	}
+	itemBytes, err := ct.ItemData(primaryID)
+	if err != nil {
+		return nil, err
+	}
+	_, err = decoder.Decode(itemBytes, seq)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
+	}
+	// If/when Decode returns nil, we will construct an image.Image from the
+	// returned Frame. Until then this branch is unreachable.
+	return nil, fmt.Errorf("%w: image assembly", ErrUnsupported)
+}
+
+// extractSequenceHeader finds the av1C property associated with itemID and
+// parses its first OBU_SEQUENCE_HEADER OBU (there must be exactly one per
+// AVIF spec). The av1C ConfigOBUs blob is encoded without OBU size fields,
+// so we parse directly with an implicit length.
+func extractSequenceHeader(ct *isobmff.Container, itemID uint32) (*obu.SequenceHeader, error) {
+	iprp := findIprp(ct)
+	if iprp == nil {
+		return nil, fmt.Errorf("goavif: no iprp")
+	}
+	var av1c *isobmff.Av1C
+	for _, m := range iprp.Ipma {
+		for _, e := range m.Entries {
+			if e.ItemID != itemID {
+				continue
+			}
+			for _, a := range e.Associations {
+				if a.PropertyIndex == 0 || int(a.PropertyIndex) > len(iprp.Ipco.Properties) {
+					continue
+				}
+				if c, ok := iprp.Ipco.Properties[a.PropertyIndex-1].(*isobmff.Av1C); ok {
+					av1c = c
+				}
+			}
+		}
+	}
+	if av1c == nil {
+		return nil, fmt.Errorf("goavif: item %d has no av1C", itemID)
+	}
+	// av1C's ConfigOBUs blob carries OBUs that do have a size field per the
+	// AV1-in-ISOBMFF binding (§2.3), so Split works directly.
+	obus, err := obu.Split(av1c.ConfigOBUs)
+	if err != nil {
+		return nil, fmt.Errorf("goavif: av1C OBU split: %w", err)
+	}
+	for _, u := range obus {
+		if u.Header.Type == obu.TypeSequenceHeader {
+			sh, err := obu.ParseSequenceHeader(u.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("goavif: av1C sequence header: %w", err)
+			}
+			return sh, nil
+		}
+	}
+	return nil, fmt.Errorf("goavif: av1C has no sequence header OBU")
+}
+
+// findIprp returns the iprp box from a parsed Container, or nil.
+func findIprp(ct *isobmff.Container) *isobmff.Iprp {
+	if ct.Meta == nil {
+		return nil
+	}
+	for _, ch := range ct.Meta.Children {
+		if p, ok := ch.(*isobmff.Iprp); ok {
+			return p
+		}
+	}
+	return nil
 }
 
 // DecodeConfig reads the AVIF container from r and returns the image
