@@ -32,6 +32,16 @@ cfg, format, err := image.DecodeConfig(r)
 Both `goavif.Decode(r)` and `goavif.Encode(w, img, opts)` are currently stubs
 that return `goavif.ErrUnsupported`. Track progress in the roadmap.
 
+### Inspect an AVIF with the CLI
+
+```
+go run ./cmd/goavif-info some.avif
+```
+
+Prints the ftyp brands, item list, properties (ispe/av1C/pixi/colr/…),
+property associations, and the parsed AV1 sequence header — all of which
+works today without the pixel decoder.
+
 ### Work with the container directly
 
 The `isobmff` subpackage exposes the box tree:
