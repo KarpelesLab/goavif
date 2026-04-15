@@ -6,6 +6,7 @@ import (
 	"image"
 	"testing"
 
+	"github.com/KarpelesLab/goavif/av1/decoder"
 	"github.com/KarpelesLab/goavif/isobmff"
 )
 
@@ -36,6 +37,28 @@ func (w *bw) trailing() {
 	for w.bit%8 != 0 {
 		w.writeBit(0)
 	}
+}
+
+// minimalFrameOBU returns an OBU_FRAME containing only a minimal uncompressed
+// frame header for a 64x48 KEY_FRAME. The tile group payload is empty — the
+// caller is expected to hit ErrPixelDecodeUnimplemented or ErrMalformed.
+func minimalFrameOBU() []byte {
+	inner := &bw{}
+	inner.writeBit(0) // disable_cdf_update
+	inner.writeBit(0) // allow_screen_content_tools (seq forces SELECT)
+	inner.writeBit(0) // render_and_frame_size_different
+	inner.writeBit(1) // uniform_tile_spacing_flag
+	inner.write(0, 8) // base_q_index = 0
+	inner.writeBit(0) // delta_q_y_dc
+	inner.writeBit(0) // delta_q_u_dc
+	inner.writeBit(0) // delta_q_u_ac
+	inner.writeBit(0) // using_qmatrix
+	inner.writeBit(0) // seg_enabled
+	inner.writeBit(0) // reduced_tx_set
+	inner.trailing()
+	// OBU header: type = FRAME (6), has_size = 1
+	obuHdr := byte((6 << 3) | (1 << 1))
+	return append([]byte{obuHdr, byte(len(inner.buf))}, inner.buf...)
 }
 
 // minimalSeqHeaderOBUs returns a valid OBU_SEQUENCE_HEADER (with has_size
@@ -94,10 +117,14 @@ func TestDecodeConfigRoundtrip(t *testing.T) {
 	}
 }
 
-func TestDecodeReturnsUnsupported(t *testing.T) {
-	av1 := []byte{0x00, 0x00, 0x00, 0x00}
+func TestDecodeReturnsUnsupportedAfterFullHeaderParse(t *testing.T) {
+	// Using a well-formed FRAME OBU so that Decode walks container -> seq
+	// header -> primary item -> OBU split -> frame header -> unimplemented
+	// pixel path and surfaces ErrPixelDecodeUnimplemented (wrapped by
+	// ErrUnsupported).
+	av1 := minimalFrameOBU()
 	ct, _ := isobmff.BuildStillImage(isobmff.StillImage{
-		Width: 16, Height: 16, BitDepth: 8, ChromaSubsamplingX: 1, ChromaSubsamplingY: 1,
+		Width: 64, Height: 48, BitDepth: 8, ChromaSubsamplingX: 1, ChromaSubsamplingY: 1,
 		ConfigOBUs:   minimalSeqHeaderOBUs(),
 		AV1Bitstream: av1,
 	})
@@ -105,6 +132,11 @@ func TestDecodeReturnsUnsupported(t *testing.T) {
 	_, err := Decode(bytes.NewReader(encoded))
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("Decode err = %v; want ErrUnsupported wrap", err)
+	}
+	// The underlying cause should be decoder.ErrPixelDecodeUnimplemented,
+	// confirming the pipeline traversed OBU + frame header successfully.
+	if !errors.Is(err, decoder.ErrPixelDecodeUnimplemented) {
+		t.Fatalf("Decode err chain should contain ErrPixelDecodeUnimplemented, got: %v", err)
 	}
 }
 
