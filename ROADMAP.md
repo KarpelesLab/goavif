@@ -22,9 +22,11 @@ Parse and serialize the AVIF container for still images.
 Minimum viable decoder: decode a single keyframe from an AVIF still to
 8-bit 4:2:0 YCbCr, including deblocking and CDEF.
 
-- [ ] `av1/bitio`: `f(n)`, `su(n)`, `uvlc`, `leb128` reader
-- [ ] `av1/obu`: OBU header parsing, sequence header, frame header
-- [ ] `av1/entropy`: symbol decoder (boolean coder) with CDF state
+- [x] `av1/bitio`: `f(n)`, `su(n)`, `uvlc`, `leb128` reader
+- [x] `av1/obu`: OBU header parsing, sequence header
+- [x] `av1/obu`: frame header (intra-only path)
+- [x] `av1/entropy`: symbol decoder (boolean coder) infrastructure
+- [ ] `av1/entropy`: default CDF tables (hundreds of contexts from spec)
 - [ ] Partition tree + intra prediction (DC, smooth, directional, Paeth, CFL)
 - [ ] Dequant + inverse transforms (DCT/ADST/FLIPADST/IDTX, 4..64)
 - [ ] Deblocking loop filter
