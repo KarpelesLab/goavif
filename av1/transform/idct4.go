@@ -1,30 +1,5 @@
 package transform
 
-import "math"
-
-// AV1 transform cosine constants (spec §7.7.1): cos_pi[k] = round(cos(k*pi/128) * 2^cosBits)
-// for k in [0, 64]. cosBits is 12.
-//
-// cos_pi[0] = 4096, cos_pi[32] = round(cos(pi/4)*4096) = 2896,
-// cos_pi[48] = round(cos(3pi/8)*4096) = 1567, cos_pi[64] = cos(pi/2) = 0.
-const cosBits = 12
-
-var cosPi [65]int32
-
-func init() {
-	for i := range cosPi {
-		cosPi[i] = int32(math.Round(math.Cos(float64(i)*math.Pi/128.0) * (1 << cosBits)))
-	}
-}
-
-// halfBtf performs a single butterfly half-stage: round((w0*in0 + w1*in1) /
-// 2^cosBits) with symmetric rounding, as defined in spec §7.7.1.2.
-func halfBtf(w0, in0, w1, in1 int32) int32 {
-	result := w0*in0 + w1*in1
-	result = (result + (1 << (cosBits - 1))) >> cosBits
-	return result
-}
-
 // IDCT4 performs an in-place 4-point inverse DCT (spec §7.7.2.1).
 // Input: 4 coefficients; output replaces them with the spatial-domain samples.
 //

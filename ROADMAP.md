@@ -27,12 +27,16 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
 - [x] `av1/obu`: frame header (intra-only path)
 - [x] `av1/entropy`: symbol decoder (boolean coder) infrastructure
 - [ ] `av1/entropy`: default CDF tables (hundreds of contexts from spec)
-- [ ] `av1/predict`: intra modes — DC done; smooth / directional / Paeth / CFL pending
-- [ ] `av1/transform`: IDCT4 done; IDCT8/16/32/64, ADST, FLIPADST, IDTX, WHT pending
+- [ ] `av1/predict`: intra modes — DC, V, H, Paeth, Smooth/V/H done; directional
+      (56 angles) / CFL / filter-intra pending
+- [ ] `av1/transform`: IDCT4/8, IADST4, IDTX done; IDCT16/32/64, IADST8/16,
+      FLIPADST, WHT, 2D wrapper pending
+- [ ] `av1/quant`: 8-bit DC/AC lookup tables + per-plane Compute done;
+      10/12-bit tables pending
 - [ ] `av1/decoder`: package skeleton landed — parses OBUs through frame header,
       returns `ErrPixelDecodeUnimplemented` for the pixel path
 - [ ] Partition tree decode + tile-group driver
-- [ ] Dequant + reconstruction pipeline
+- [ ] Residual coefficient decoding + reconstruction pipeline
 - [ ] Deblocking loop filter
 - [ ] CDEF (constrained directional enhancement filter)
 - [ ] Top-level `goavif.Decode` → `image.Image` for 8-bit 4:2:0 still AVIF
