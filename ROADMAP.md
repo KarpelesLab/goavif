@@ -26,21 +26,33 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
 - [x] `av1/obu`: OBU header parsing, sequence header
 - [x] `av1/obu`: frame header (intra-only path)
 - [x] `av1/entropy`: symbol decoder (boolean coder) infrastructure
-- [ ] `av1/entropy`: default CDF tables (hundreds of contexts from spec)
-- [ ] `av1/predict`: intra modes — DC, V, H, Paeth, Smooth/V/H done; directional
-      (56 angles) / CFL / filter-intra pending
-- [ ] `av1/transform`: IDCT4/8, IADST4, IDTX done; IDCT16/32/64, IADST8/16,
-      FLIPADST, WHT, 2D wrapper pending
-- [ ] `av1/quant`: 8-bit DC/AC lookup tables + per-plane Compute done;
-      10/12-bit tables pending
-- [ ] `av1/decoder`: package skeleton landed — parses OBUs through frame header,
-      returns `ErrPixelDecodeUnimplemented` for the pixel path
-- [ ] Partition tree — geometry walker landed; bitstream-driven decoder pending
-- [ ] Residual coefficient decoding
-- [ ] Reconstruction — ReconstructBlock helper landed; needs integration
-- [ ] Deblocking loop filter — 4-tap narrow done; 8/14-tap pending
+- [x] `av1/entropy/cdfs`: CDF type + constructors + `default_skip_txfm_cdf`
+- [ ] `av1/entropy/cdfs`: remaining default tables (partition, intra mode,
+      tx size/type, segment id, coefficient base/br/eob/sign — hundreds of
+      contexts from spec §9.4)
+- [x] `av1/predict`: DC, V, H, Paeth, Smooth/V/H, D45, D135, CFL
+- [ ] `av1/predict`: D113/D157/D203/D67 + angle delta sub-pixel form,
+      filter-intra, recursive intra
+- [x] `av1/transform`: IDCT4/8/16, IADST4, IDTX4/8/16/32, IFLIPADST4,
+      FDCT4, Inverse2D wrapper, RowOp/ColOp dispatch, DefaultZigzagScan
+- [ ] `av1/transform`: IDCT32/64, IADST8/16, FLIPADST8/16, WHT,
+      forward-side counterparts for the encoder
+- [x] `av1/quant`: 8-bit DC/AC lookup tables + Params.Compute per plane
+- [ ] `av1/quant`: 10/12-bit tables, Q-matrix / segment-Q application
+- [x] `av1/decoder`: container → seq header → frame header pipeline; partition
+      tree walker; PredictIntra dispatch; per-block DecodeBlock helper;
+      DequantCoeff
+- [ ] `av1/decoder`: bitstream-driven partition / mode / coefficient reading;
+      tile-group orchestrator that ties everything together
+- [x] Reconstruction: per-block ReconstructBlock done
+- [x] Loop filter: 4-tap narrow + 8-tap wide + frame-level driver
+- [ ] Loop filter: 14-tap widest, mask derivation from filter_level/QP/sharpness
 - [ ] CDEF (constrained directional enhancement filter)
-- [ ] Top-level `goavif.Decode` → `image.Image` for 8-bit 4:2:0 still AVIF
+- [x] `colorspace`: YUV→RGB BT.601/709/2020 + Studio/Full range
+- [x] `goavif.Decode`: end-to-end pipeline wired (returns
+      `ErrPixelDecodeUnimplemented` until coefficient decoding lands);
+      Frame → image.Image bridge in place
+- [x] `cmd/goavif-info`: container/sequence-header inspector CLI
 - [ ] Golden tests vs dav1d on AOM intra-only test vectors
 
 ## Phase 3 — Full AV1 decoder
