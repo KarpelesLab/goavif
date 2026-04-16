@@ -26,12 +26,14 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
 - [x] `av1/obu`: OBU header parsing, sequence header
 - [x] `av1/obu`: frame header (intra-only path)
 - [x] `av1/entropy`: symbol decoder (boolean coder) infrastructure
-- [x] `av1/entropy/cdfs`: CDF type + AomCDF inversion + default tables for:
+- [x] `av1/entropy/cdfs`: CDF type + AomCDF inversion + full default tables:
       skip, partition (20 ctxs), kf_y_mode (5×5 ctxs), uv_mode (2×13),
       angle_delta (8), tx_size (4×3), txfm_partition (21), dc_sign (2×3),
-      txb_skip (5×13, Q=0)
-- [ ] `av1/entropy/cdfs`: remaining coeff CDFs (eob, coeff_base, coeff_br),
-      Q contexts 1-3 for txb_skip, segment_id
+      txb_skip (5×13, Q=0), eob_multi 16/32/64/128/256/512/1024 (all Q),
+      eob_extra (4×5×2×9), coeff_base_multi (4×5×2×42), coeff_br_multi
+      (4×5×2×21), coeff_base_eob_multi (Q=0)
+- [ ] `av1/entropy/cdfs`: Q contexts 1-3 for txb_skip & coeff_base_eob,
+      segment_id, filter_intra, palette, kf_mode context offsets
 - [x] `av1/predict`: DC, V, H, Paeth, Smooth/V/H, D45, D135, CFL
 - [ ] `av1/predict`: D113/D157/D203/D67 + angle delta sub-pixel form,
       filter-intra, recursive intra
