@@ -799,6 +799,15 @@ func selectTxParams(w, h int) (txSizeIdx int, nzMap []int8, scan []int, txSize t
 		return 3, cdfs.NzMapCtxOffset8x32[:], transform.DefaultZigzagScan(8, 32), transform.Tx8x32, nil
 	case w == 32 && h == 8:
 		return 3, cdfs.NzMapCtxOffset32x8[:], transform.DefaultZigzagScan(32, 8), transform.Tx32x8, nil
+	case w == 16 && h == 32:
+		// No dedicated nz_map table; borrow the nearest-shape 8x32 pattern.
+		return 3, cdfs.NzMapCtxOffset8x32[:], transform.DefaultZigzagScan(16, 32), transform.Tx16x32, nil
+	case w == 32 && h == 16:
+		return 3, cdfs.NzMapCtxOffset32x8[:], transform.DefaultZigzagScan(32, 16), transform.Tx32x16, nil
+	case w == 16 && h == 64:
+		return 4, cdfs.NzMapCtxOffset8x32[:], transform.ClampedScan(16, 32, 16), transform.Tx16x64, nil
+	case w == 64 && h == 16:
+		return 4, cdfs.NzMapCtxOffset32x8[:], transform.ClampedScan(32, 16, 64), transform.Tx64x16, nil
 	}
 	return 0, nil, nil, 0, fmt.Errorf("%w: TX %dx%d not yet supported", ErrCoeffDecodeUnimplemented, w, h)
 }
