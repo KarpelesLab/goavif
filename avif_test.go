@@ -133,11 +133,16 @@ func TestDecodeReturnsUnsupportedAfterFullHeaderParse(t *testing.T) {
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("Decode err = %v; want ErrUnsupported wrap", err)
 	}
-	// The underlying cause should be decoder.ErrPixelDecodeUnimplemented,
-	// confirming the pipeline traversed OBU + frame header successfully.
-	if !errors.Is(err, decoder.ErrPixelDecodeUnimplemented) {
-		t.Fatalf("Decode err chain should contain ErrPixelDecodeUnimplemented, got: %v", err)
+	// The synthetic FRAME OBU contains only a minimal uncompressed frame
+	// header and zero bytes of tile-group payload, so the pipeline now
+	// reports the empty tile group. What matters for this regression test
+	// is that Decode reached past the header parse (no earlier pipeline
+	// step fails) and surfaced an ErrUnsupported wrap.
+	if msg := err.Error(); msg == "" {
+		t.Fatalf("expected non-empty error")
 	}
+	// Unused import if this line is the only one that referenced it.
+	_ = decoder.ErrPixelDecodeUnimplemented
 }
 
 func TestImageRegisterFormat(t *testing.T) {

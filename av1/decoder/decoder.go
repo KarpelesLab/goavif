@@ -19,11 +19,11 @@ var ErrPixelDecodeUnimplemented = errors.New("av1/decoder: pixel reconstruction 
 // Stride values are measured in samples (not bytes). Y/U/V widths and
 // heights account for chroma subsampling.
 type Frame struct {
-	Width    int
-	Height   int
-	BitDepth int
+	Width       int
+	Height      int
+	BitDepth    int
 	Subsampling struct{ X, Y uint8 }
-	Monochrome bool
+	Monochrome  bool
 
 	Y []byte
 	U []byte
@@ -37,11 +37,10 @@ type Frame struct {
 }
 
 // Decode parses the OBUs in itemData using seqHdr (typically from the
-// containing AVIF's av1C box) and returns the decoded frame metadata.
+// containing AVIF's av1C box) and returns the decoded frame.
 //
-// The pixel planes (Y/U/V) are not yet populated; callers will receive
-// [ErrPixelDecodeUnimplemented] once the header parsing succeeds, until
-// the tile-group decoder lands.
+// For AVIF stills this drives the entropy + coefficient decoder over the
+// tile group payload to produce reconstructed Y/U/V pixel planes.
 func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 	if seqHdr == nil {
 		return nil, fmt.Errorf("av1/decoder: seqHdr is required")
@@ -59,24 +58,20 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 		case obu.TypeTemporalDelimiter, obu.TypePadding, obu.TypeMetadata:
 			// ignored for still-image decode
 		case obu.TypeSequenceHeader:
-			// AVIF may duplicate the av1C seq header in the item bitstream;
-			// use the later one to match the spec's "latest seq header wins".
 			sh, err := obu.ParseSequenceHeader(u.Payload)
 			if err != nil {
 				return nil, fmt.Errorf("av1/decoder: inline seq header: %w", err)
 			}
 			seqHdr = sh
 		case obu.TypeFrame:
-			// FRAME OBU = FrameHeader + TileGroup concatenated. We split by
-			// frame-header byte span; a helper in av1/obu would be cleaner
-			// but the minimal path is to parse and let the frame header
-			// consumer report how many bytes it used.
-			fh, tail, err := parseFrameOBU(u.Payload, seqHdr)
+			fh, consumed, err := obu.ParseFrameHeaderBytes(u.Payload, seqHdr, nil)
 			if err != nil {
 				return nil, err
 			}
 			frameHdr = fh
-			tileGroupPayload = tail
+			if consumed < len(u.Payload) {
+				tileGroupPayload = u.Payload[consumed:]
+			}
 		case obu.TypeFrameHeader, obu.TypeRedundantFrameHeader:
 			fh, err := obu.ParseFrameHeader(u.Payload, seqHdr, nil)
 			if err != nil {
@@ -91,35 +86,61 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 	if frameHdr == nil {
 		return nil, fmt.Errorf("av1/decoder: no FRAME or FRAME_HEADER OBU")
 	}
-	_ = tileGroupPayload // consumed by the pixel path once implemented
+
+	// Run the tile decoder over the tile group payload.
+	fs := NewFrameState(
+		int(frameHdr.FrameWidth), int(frameHdr.FrameHeight),
+		int(seqHdr.Color.SubsamplingX), int(seqHdr.Color.SubsamplingY),
+		seqHdr.Color.Monochrome,
+	)
+	if err := runTileGroup(fs, tileGroupPayload, frameHdr, seqHdr); err != nil {
+		return nil, err
+	}
 
 	f := &Frame{
-		Width:      int(frameHdr.FrameWidth),
-		Height:     int(frameHdr.FrameHeight),
+		Width:      fs.Width,
+		Height:     fs.Height,
 		BitDepth:   int(seqHdr.Color.BitDepth),
 		Monochrome: seqHdr.Color.Monochrome,
+		Y:          fs.Y,
+		U:          fs.U,
+		V:          fs.V,
+		YStride:    fs.YStride,
+		CStride:    fs.UVStride,
 		Header:     frameHdr,
 		Seq:        seqHdr,
 	}
 	f.Subsampling.X = seqHdr.Color.SubsamplingX
 	f.Subsampling.Y = seqHdr.Color.SubsamplingY
-
-	return f, ErrPixelDecodeUnimplemented
+	return f, nil
 }
 
-// parseFrameOBU splits a FRAME OBU into its frame_header and tile_group
-// parts. The spec says the frame header is followed by a byte-aligned tile
-// group starting at the next byte. We use the frame header's internal
-// cursor position to determine the split.
-//
-// NOTE: obu.ParseFrameHeader does not currently expose the number of bytes
-// consumed. As a pragmatic stand-in we re-parse via a helper that tracks
-// position; for now, we return the tail as nil and let the caller treat the
-// FRAME OBU as header-only when pixel decoding is unimplemented.
-func parseFrameOBU(payload []byte, seq *obu.SequenceHeader) (*obu.FrameHeader, []byte, error) {
-	fh, err := obu.ParseFrameHeader(payload, seq, nil)
-	if err != nil {
-		return nil, nil, err
+// runTileGroup assumes a single-tile payload (common for AVIF stills) and
+// walks all superblocks in it. Multi-tile frames need the tile_size_bytes
+// leb128 prefixes and per-tile entropy decoder resets; that path is
+// deferred.
+func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader) error {
+	if len(tileData) == 0 {
+		return fmt.Errorf("av1/decoder: empty tile group payload")
 	}
-	return fh, nil, nil
+	if fh.Tile.TileCols > 1 || fh.Tile.TileRows > 1 {
+		return fmt.Errorf("%w: multi-tile frames not yet supported", ErrPixelDecodeUnimplemented)
+	}
+
+	td, err := NewTileDecoder(tileData, fh, sh)
+	if err != nil {
+		return err
+	}
+	sbSize := 64
+	if sh.Use128x128Superblock {
+		sbSize = 128
+	}
+	for sbY := 0; sbY < fs.Height; sbY += sbSize {
+		for sbX := 0; sbX < fs.Width; sbX += sbSize {
+			if err := td.DecodeSuperblock(fs, sbX, sbY); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

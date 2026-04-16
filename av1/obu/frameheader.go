@@ -86,15 +86,24 @@ const (
 // state). When present, it provides the fields needed to fully process
 // show_existing_frame and inter-frame paths.
 func ParseFrameHeader(payload []byte, seqHdr *SequenceHeader, refInfo *RefFrameState) (*FrameHeader, error) {
+	fh, _, err := ParseFrameHeaderBytes(payload, seqHdr, refInfo)
+	return fh, err
+}
+
+// ParseFrameHeaderBytes is like [ParseFrameHeader] but also returns the
+// number of bytes consumed from payload. This lets a caller split an
+// OBU_FRAME into its uncompressed-header portion and the tile group that
+// follows: tileGroup = payload[consumed:].
+func ParseFrameHeaderBytes(payload []byte, seqHdr *SequenceHeader, refInfo *RefFrameState) (*FrameHeader, int, error) {
 	r := bitio.NewReader(payload)
 	fh := &FrameHeader{}
 	if err := parseUncompressedHeader(r, fh, seqHdr, refInfo); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := r.TrailingBits(); err != nil {
-		return nil, fmt.Errorf("%w: frame header trailing bits: %w", ErrMalformed, err)
+		return nil, 0, fmt.Errorf("%w: frame header trailing bits: %w", ErrMalformed, err)
 	}
-	return fh, nil
+	return fh, int(r.BytePos()), nil
 }
 
 // RefFrameState carries inter-frame persistence needed to parse headers of
