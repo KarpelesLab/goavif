@@ -13,13 +13,17 @@ import (
 type Container struct {
 	Ftyp *Ftyp
 	Meta *Meta
+	// Moov is populated for AVIF image sequences (ftyp brand "avis")
+	// and carries the per-frame timing and byte-offset tables. Nil
+	// for still images.
+	Moov *Moov
 	Mdat *Mdat
 	// MdatOffset is the absolute file offset of the mdat payload (first byte
 	// after the mdat header). It is set by [ParseContainer] and used by
 	// [Container.ItemData] to resolve iloc extents of construction_method 0.
 	MdatOffset uint64
-	// Extras are top-level boxes other than ftyp/meta/mdat, preserved in the
-	// order seen in the source file.
+	// Extras are top-level boxes other than ftyp/meta/moov/mdat, preserved
+	// in the order seen in the source file.
 	Extras []Box
 }
 
@@ -66,6 +70,12 @@ func ParseContainer(data []byte) (*Container, error) {
 				return nil, err
 			}
 			ct.Meta = mt
+		case TypeMoov:
+			mv, err := ParseMoov(payload)
+			if err != nil {
+				return nil, err
+			}
+			ct.Moov = mv
 		case TypeMdat:
 			md, err := ParseMdat(payload)
 			if err != nil {

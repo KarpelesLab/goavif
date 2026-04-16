@@ -186,8 +186,16 @@ Parity with the reference conformance suite.
       output lands as image.RGBA64 / image.NRGBA64. Transfer
       function passthrough is bitstream-level (decoder produces
       linear-relative YUV regardless of signaled transfer).
-- [ ] Image sequences: parse `moov`/`trak`/`stbl` and expose per-frame timing
-- [ ] `goavif.DecodeAll` public API
+- [x] Image sequences: parse `moov`/`trak`/`mdia`/`minf`/`stbl`
+      plus stts/stsc/stsz/stco/co64. Stbl.SampleTable walks the
+      compact tables into a flat []Sample. Moov.ImageTrackStbl
+      dives through the trak hierarchy to find the image track.
+- [x] `goavif.DecodeAll` public API: reads AVIF stills as a single
+      1-frame slice, AVIS sequences as per-sample frames +
+      time.Duration timings.
+- [ ] Image sequences: sync-sample / CRA handling (currently every
+      frame is decoded as a standalone keyframe — works for
+      intra-only AVIS, which is common).
 
 ## Phase 5 — AV1 encoder: intra-only baseline
 

@@ -81,6 +81,23 @@ var (
 	TypeThmb = FourCCOf("thmb")
 	TypeCdsc = FourCCOf("cdsc")
 	TypeDimg = FourCCOf("dimg")
+
+	// Movie box hierarchy for AVIF image sequences (ftyp brand "avis").
+	TypeMoov = FourCCOf("moov")
+	TypeMvhd = FourCCOf("mvhd")
+	TypeTrak = FourCCOf("trak")
+	TypeTkhd = FourCCOf("tkhd")
+	TypeMdia = FourCCOf("mdia")
+	TypeMdhd = FourCCOf("mdhd")
+	TypeMinf = FourCCOf("minf")
+	TypeStbl = FourCCOf("stbl")
+	TypeStsd = FourCCOf("stsd")
+	TypeStts = FourCCOf("stts")
+	TypeStsc = FourCCOf("stsc")
+	TypeStsz = FourCCOf("stsz")
+	TypeStco = FourCCOf("stco")
+	TypeCo64 = FourCCOf("co64")
+	TypeStss = FourCCOf("stss")
 )
 
 // ErrTruncated indicates that a box ended before its declared size.
