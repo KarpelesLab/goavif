@@ -170,12 +170,101 @@ func (td *TileDecoder) decodePartitionNode(fs *FrameState, x, y int, bs BlockSiz
 			return err
 		}
 		return td.decodePartitionNode(fs, x+hw, y+hh, sub)
+	case 4: // PARTITION_HORZ_A — two quarter sub-blocks on top, one half below
+		sub := quarterSize(bs)
+		bot := halfBelowSize(bs, true)
+		if err := td.decodeLeafBlock(fs, x, y, sub); err != nil {
+			return err
+		}
+		if err := td.decodeLeafBlock(fs, x+hw, y, sub); err != nil {
+			return err
+		}
+		return td.decodeLeafBlock(fs, x, y+hh, bot)
+	case 5: // PARTITION_HORZ_B — one half on top, two quarters below
+		top := halfBelowSize(bs, true)
+		sub := quarterSize(bs)
+		if err := td.decodeLeafBlock(fs, x, y, top); err != nil {
+			return err
+		}
+		if err := td.decodeLeafBlock(fs, x, y+hh, sub); err != nil {
+			return err
+		}
+		return td.decodeLeafBlock(fs, x+hw, y+hh, sub)
+	case 6: // PARTITION_VERT_A — two quarters on left, one half on right
+		sub := quarterSize(bs)
+		right := halfBelowSize(bs, false)
+		if err := td.decodeLeafBlock(fs, x, y, sub); err != nil {
+			return err
+		}
+		if err := td.decodeLeafBlock(fs, x, y+hh, sub); err != nil {
+			return err
+		}
+		return td.decodeLeafBlock(fs, x+hw, y, right)
+	case 7: // PARTITION_VERT_B — one half on left, two quarters on right
+		left := halfBelowSize(bs, false)
+		sub := quarterSize(bs)
+		if err := td.decodeLeafBlock(fs, x, y, left); err != nil {
+			return err
+		}
+		if err := td.decodeLeafBlock(fs, x+hw, y, sub); err != nil {
+			return err
+		}
+		return td.decodeLeafBlock(fs, x+hw, y+hh, sub)
+	case 8: // PARTITION_HORZ_4 — 4 horizontal stripes at 1/4 height each
+		qh := h / 4
+		rowBS := horz4Size(bs)
+		for i := 0; i < 4; i++ {
+			if y+i*qh >= fs.Height {
+				break
+			}
+			if err := td.decodeLeafBlock(fs, x, y+i*qh, rowBS); err != nil {
+				return err
+			}
+		}
+		return nil
+	case 9: // PARTITION_VERT_4 — 4 vertical stripes at 1/4 width each
+		qw := w / 4
+		colBS := vert4Size(bs)
+		for i := 0; i < 4; i++ {
+			if x+i*qw >= fs.Width {
+				break
+			}
+			if err := td.decodeLeafBlock(fs, x+i*qw, y, colBS); err != nil {
+				return err
+			}
+		}
+		return nil
 	default:
-		// Extended partitions (HORZ_A/B, VERT_A/B, HORZ_4, VERT_4) — not
-		// yet implemented but consumed from the bitstream. Treat as a
-		// single leaf to stay synchronized.
 		return td.decodeLeafBlock(fs, x, y, bs)
 	}
+}
+
+// horz4Size returns the block size of each of the 4 horizontal stripes
+// produced by PARTITION_HORZ_4 on bs.
+func horz4Size(bs BlockSize) BlockSize {
+	switch bs {
+	case Block16x16:
+		return Block16x4
+	case Block32x32:
+		return Block32x8
+	case Block64x64:
+		return Block64x16
+	}
+	return Block4x4
+}
+
+// vert4Size returns the block size of each of the 4 vertical stripes
+// produced by PARTITION_VERT_4 on bs.
+func vert4Size(bs BlockSize) BlockSize {
+	switch bs {
+	case Block16x16:
+		return Block4x16
+	case Block32x32:
+		return Block8x32
+	case Block64x64:
+		return Block16x64
+	}
+	return Block4x4
 }
 
 // decodeLeafBlock decodes one coding block: reads mode symbols, and for

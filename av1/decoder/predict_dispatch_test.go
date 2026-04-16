@@ -23,12 +23,18 @@ func TestPredictIntraDC(t *testing.T) {
 	}
 }
 
-func TestPredictIntraVRequiresAbove(t *testing.T) {
-	n := &Neighbors{HaveAbove: false}
+func TestPredictIntraVFillsHalfWhenAboveMissing(t *testing.T) {
+	// When above samples are not available (top-frame-edge block), the
+	// spec fills a half-range default rather than erroring.
+	n := &Neighbors{HaveAbove: false, BitDepth: 8}
 	dst := make([]uint8, 16)
-	err := PredictIntra(dst, 4, 4, VPred, n)
-	if err == nil {
-		t.Fatalf("V_PRED without above should error")
+	if err := PredictIntra(dst, 4, 4, VPred, n); err != nil {
+		t.Fatalf("V_PRED should succeed via half-range fallback: %v", err)
+	}
+	for i, v := range dst {
+		if v != 128 {
+			t.Errorf("dst[%d]=%d want 128", i, v)
+		}
 	}
 }
 

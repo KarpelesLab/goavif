@@ -1,10 +1,21 @@
 package decoder
 
 import (
-	"fmt"
-
 	"github.com/KarpelesLab/goavif/av1/predict"
 )
+
+// fillHalf writes a half-range sample (2^(bd-1)) into every cell of dst.
+// bd defaults to 8 when <= 0 so callers with un-initialized Neighbors
+// don't hit a negative-shift panic.
+func fillHalf(dst []uint8, w, h, bd int) {
+	if bd <= 0 {
+		bd = 8
+	}
+	half := uint8(1 << uint(bd-1))
+	for i := range dst[:w*h] {
+		dst[i] = half
+	}
+}
 
 // Neighbors carries the reconstructed samples adjacent to a block, plus
 // availability flags. above / left have at least w / h samples; the
@@ -37,18 +48,23 @@ func PredictIntra(dst []uint8, w, h int, mode IntraMode, n *Neighbors) error {
 	case DCPred:
 		predict.DCPred(dst, w, h, n.Above, n.Left, n.HaveAbove, n.HaveLeft, n.BitDepth)
 	case VPred:
+		// When above is unavailable (top frame edge) the spec substitutes
+		// a half-range value so the prediction is well-defined.
 		if !n.HaveAbove {
-			return fmt.Errorf("V_PRED requires above samples")
+			fillHalf(dst, w, h, n.BitDepth)
+			return nil
 		}
 		predict.VPred(dst, w, h, n.Above)
 	case HPred:
 		if !n.HaveLeft {
-			return fmt.Errorf("H_PRED requires left samples")
+			fillHalf(dst, w, h, n.BitDepth)
+			return nil
 		}
 		predict.HPred(dst, w, h, n.Left)
 	case PaethPred:
 		if !n.HaveAbove || !n.HaveLeft {
-			return fmt.Errorf("PAETH_PRED requires both above and left")
+			fillHalf(dst, w, h, n.BitDepth)
+			return nil
 		}
 		predict.PaethPred(dst, w, h, n.Above, n.Left, n.AboveLeft)
 	case SmoothPred:
