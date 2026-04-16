@@ -31,9 +31,11 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
       angle_delta (8), tx_size (4×3), txfm_partition (21), dc_sign (2×3),
       txb_skip (5×13, Q=0), eob_multi 16/32/64/128/256/512/1024 (all Q),
       eob_extra (4×5×2×9), coeff_base_multi (4×5×2×42), coeff_br_multi
-      (4×5×2×21), coeff_base_eob_multi (Q=0)
+      (4×5×2×21), coeff_base_eob_multi (Q=0), cfl_sign + cfl_alpha (6
+      ctxs), spatial_pred_seg_tree (3 ctxs), nz_map_ctx_offset for all
+      square + 8 rectangular TX shapes
 - [ ] `av1/entropy/cdfs`: Q contexts 1-3 for txb_skip & coeff_base_eob,
-      segment_id, filter_intra, palette, kf_mode context offsets
+      filter_intra, palette, intra_tx_type signaling
 - [x] `av1/predict`: DC, V, H, Paeth, Smooth/V/H, full directional
       (D45/D67/D113/D135/D157/D203 via DirectionalPred), CFL scaffold
 - [ ] `av1/predict`: angle_delta sub-pixel refinement, filter-intra,
