@@ -63,17 +63,19 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
   - CoeffDecoder reads txb_skip / eob_pt + eob_extra / coeff_base_multi /
     coeff_br_multi / dc_sign / AC uniform signs, with sig_coef_ctx and
     level_ctx derivation per spec §6.10.6
-  - Superblock partition-tree walker with NONE/HORZ/VERT/SPLIT support
+  - Superblock partition tree — NONE / HORZ / VERT / SPLIT +
+    HORZ_A/B / VERT_A/B / HORZ_4 / VERT_4 (all 10 partition types)
   - Per-block intra predict → dequant (base + segmentation Δ) → inverse
     2D transform (tx_type dispatched) → reconstruct → plane write
   - Chroma pipeline: UV mode decode, optional CFL with reconstructed
     luma AC + decoded alpha, per-plane coefficient decode + dequant
   - Multi-tile tile-group support (tile_size_minus_1 leb128 prefixes)
-- [ ] `av1/decoder` extras:
-  - TX_64x64 / 64x32 / 32x64 with the spec's top-left 32×32 subregion
-    coefficient layout
-  - Extended partitions HORZ_A/B, VERT_A/B, HORZ_4, VERT_4
+  - TX_64x64 / 64x32 / 32x64 via transform.ClampedScan (32×32 coded
+    subregion per spec §7.7.3)
+  - Edge-of-frame V/H/Paeth fallback to half-range samples
+- [ ] `av1/decoder` stragglers:
   - filter_intra / palette / intrabc modes
+  - Per-superblock cdef_idx signaling (uses strengths[0] as default)
 
 ### Filters and output
 - [x] Loop filter: 4-tap narrow + 8-tap wide + frame-level driver;
@@ -86,7 +88,8 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       wired into the decoder after deblocking when sh.EnableCdef
 - [ ] CDEF: per-superblock cdef_idx signaling (currently uses
       strengths[0] as a sensible default)
-- [ ] Loop restoration (Wiener + self-guided)
+- [x] Loop restoration: Wiener 7-tap separable filter primitives (av1/lr)
+- [ ] Loop restoration: self-guided (SGR), per-unit signaling, frame driver
 - [ ] Film grain synthesis
 
 ### Top level
