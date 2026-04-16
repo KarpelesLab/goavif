@@ -40,10 +40,10 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
       (D45/D67/D113/D135/D157/D203 via DirectionalPred), CFL scaffold
 - [ ] `av1/predict`: angle_delta sub-pixel refinement, filter-intra,
       recursive intra, proper CFL (luma AC × signed alpha)
-- [x] `av1/transform`: IDCT4/8/16, IADST4, IDTX4/8/16/32, IFLIPADST4,
-      FDCT4, Inverse2D wrapper, RowOp/ColOp dispatch (4/8/16-point),
-      DefaultZigzagScan
-- [ ] `av1/transform`: IDCT32/64, IADST8/16, FLIPADST8/16, WHT
+- [x] `av1/transform`: every 1D inverse transform AV1 defines:
+      IDCT4/8/16/32/64, IADST4/8/16, IFLIPADST4/8/16, IDTX4/8/16/32,
+      IWHT4 (lossless), FDCT4 (encoder skeleton), Inverse2D wrapper,
+      RowOp/ColOp dispatch (4/8/16/32/64-point), DefaultZigzagScan
 - [x] `av1/quant`: 8-bit DC/AC lookup tables + Params.Compute per plane
 - [ ] `av1/quant`: 10/12-bit tables, Q-matrix / segment-Q application
 - [x] `av1/decoder`: full pipeline — container → seq header → frame
@@ -53,8 +53,10 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
 - [x] `av1/decoder`: CoeffDecoder reads txb_skip / eob / coeff_base /
       coeff_br / dc_sign / AC signs; sig_coef and level context
       derivation landed for 4×4, 8×8, 16×16
-- [ ] `av1/decoder`: TX_32x32/64x64, non-square TX, multi-tile frames,
-      intra_tx_type signaling, segment_id, filter_intra
+- [x] `av1/decoder`: intra_tx_type signaling wired (ReadIntraTxType +
+      IntraTxTypeFor mapping for the 2 EXT_TX_SET_INTRA families)
+- [ ] `av1/decoder`: TX_64x64 tile-level (needs top-left 32×32 subregion
+      coeff layout), multi-tile frames, segment_id decoding, filter_intra
 - [x] Reconstruction: per-block ReconstructBlock done
 - [x] Loop filter: 4-tap narrow + 8-tap wide + frame-level driver;
       DeriveThresholds from filter_level / sharpness; Y+UV pass wired
