@@ -2,6 +2,10 @@ package decoder
 
 import (
 	"fmt"
+
+	"github.com/KarpelesLab/goavif/av1/entropy/cdfs"
+	"github.com/KarpelesLab/goavif/av1/quant"
+	"github.com/KarpelesLab/goavif/av1/transform"
 )
 
 // ModeInfo stores per-MI-unit (4×4 block) decoded mode information.
@@ -193,11 +197,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 		}
 	}
 
-	if !skip {
-		return fmt.Errorf("%w (block at %d,%d mode=%s)", ErrCoeffDecodeUnimplemented, x, y, yMode)
-	}
-
-	// Skip block: predict only, zero residual.
+	// Determine effective block dimensions (clipped to frame).
 	bw := bs.Width()
 	bh := bs.Height()
 	if bw > fs.Width-x {
@@ -206,6 +206,8 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 	if bh > fs.Height-y {
 		bh = fs.Height - y
 	}
+
+	// Build neighbor samples and run intra prediction.
 	above := make([]uint8, bw)
 	left := make([]uint8, bh)
 	haveAbove := y > 0
@@ -234,9 +236,86 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 	if err := PredictIntra(pred, bw, bh, yMode, n); err != nil {
 		return err
 	}
+
+	if skip {
+		// Zero residual — predicted samples are the final output.
+		for r := 0; r < bh; r++ {
+			for c := 0; c < bw; c++ {
+				fs.Y[(y+r)*fs.YStride+(x+c)] = pred[r*bw+c]
+			}
+		}
+		return nil
+	}
+
+	// Non-skip: read coefficients + dequant + inverse transform, then
+	// add to the prediction. Currently limited to 4×4/8×8 TX blocks.
+	if err := td.reconstructResidual(fs, pred, x, y, bw, bh); err != nil {
+		return err
+	}
+	return nil
+}
+
+// reconstructResidual decodes the residual for a single-TX block (no TX
+// splitting) and adds it to the prediction before writing to fs.Y. It
+// supports TX_4X4 and TX_8X8 today; larger blocks return
+// ErrCoeffDecodeUnimplemented.
+func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, bw, bh int) error {
+	if td.coeff == nil {
+		return fmt.Errorf("%w: coeff decoder not initialized", ErrCoeffDecodeUnimplemented)
+	}
+	var txSizeIdx int
+	var nzMap []int8
+	var scan []int
+	switch {
+	case bw == 4 && bh == 4:
+		txSizeIdx = 0
+		nzMap = cdfs.NzMapCtxOffset4x4[:]
+		scan = transform.DefaultZigzagScan(4, 4)
+	case bw == 8 && bh == 8:
+		txSizeIdx = 1
+		nzMap = cdfs.NzMapCtxOffset8x8[:]
+		scan = transform.DefaultZigzagScan(8, 8)
+	default:
+		return fmt.Errorf("%w: residual decode only implemented for 4×4 and 8×8",
+			ErrCoeffDecodeUnimplemented)
+	}
+
+	numCoeffs := bw * bh
+	coeffs, err := td.coeff.ReadCoefficients(txSizeIdx, 0 /*luma*/, numCoeffs, scan, nzMap, bw, bh)
+	if err != nil {
+		return err
+	}
+
+	// Dequantize using base Y params; caller should apply the correct QP
+	// once delta_q / segmentation are wired. For now, use BaseQIndex.
+	qParams := quant.Params{
+		BaseQIndex: int(td.fh.Quant.BaseQIndex),
+		DeltaQYDc:  int(td.fh.Quant.DeltaQYDc),
+		BitDepth:   int(td.sh.Color.BitDepth),
+	}
+	qv := qParams.Compute(quant.PlaneY)
+	for i := range coeffs {
+		coeffs[i] = DequantCoeff(coeffs[i], i, qv)
+	}
+
+	// Inverse 2D transform (DCT-DCT is the AVIF common case).
+	var txSize transform.TxSize
+	switch txSizeIdx {
+	case 0:
+		txSize = transform.Tx4x4
+	case 1:
+		txSize = transform.Tx8x8
+	}
+	if err := transform.Inverse2D(coeffs, transform.DctDct, txSize); err != nil {
+		return err
+	}
+
+	// Reconstruct: pred + residual, clipped to 0..255.
+	out := make([]uint8, bw*bh)
+	ReconstructBlock(out, pred, coeffs, bw, bh)
 	for r := 0; r < bh; r++ {
 		for c := 0; c < bw; c++ {
-			fs.Y[(y+r)*fs.YStride+(x+c)] = pred[r*bw+c]
+			fs.Y[(y+r)*fs.YStride+(x+c)] = out[r*bw+c]
 		}
 	}
 	return nil

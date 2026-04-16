@@ -26,17 +26,18 @@ type DecodedBlock struct {
 // TileDecoder reads AV1 symbol-coded syntax from a single tile's byte
 // span using the entropy decoder and the default CDF tables.
 type TileDecoder struct {
-	dec   entropy.Decoder
-	fh    *obu.FrameHeader
-	sh    *obu.SequenceHeader
+	dec    entropy.Decoder
+	fh     *obu.FrameHeader
+	sh     *obu.SequenceHeader
 	sbSize int
+	coeff  *CoeffDecoder
 
 	// CDFs — mutable copies for per-tile adaptation.
-	partitionCDF [20]cdfs.CDF
-	kfYModeCDF   [5][5]cdfs.CDF
-	uvModeCDF    [2][13]cdfs.CDF
+	partitionCDF  [20]cdfs.CDF
+	kfYModeCDF    [5][5]cdfs.CDF
+	uvModeCDF     [2][13]cdfs.CDF
 	angleDeltaCDF [8]cdfs.CDF
-	skipCDF      [3]cdfs.CDF
+	skipCDF       [3]cdfs.CDF
 }
 
 // NewTileDecoder initializes a tile decoder for the given tile data.
@@ -55,7 +56,24 @@ func NewTileDecoder(tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader
 		return nil, fmt.Errorf("tile decoder init: %w", err)
 	}
 	td.initCDFs()
+	// Derive Q context from the frame's base_q_index (spec §7.12.4).
+	qCtx := qIndexToCtx(int(fh.Quant.BaseQIndex))
+	td.coeff = InitCoeffDecoder(&td.dec, qCtx)
 	return td, nil
+}
+
+// qIndexToCtx maps base_q_index to the 4-way TOKEN_CDF_Q_CTXS bucket.
+// Spec boundaries: 0..63 → 0, 64..127 → 1, 128..191 → 2, 192..255 → 3.
+func qIndexToCtx(q int) int {
+	switch {
+	case q < 64:
+		return 0
+	case q < 128:
+		return 1
+	case q < 192:
+		return 2
+	}
+	return 3
 }
 
 // initCDFs copies the default CDFs into mutable per-tile state. The entropy
