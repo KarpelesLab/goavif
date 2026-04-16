@@ -70,3 +70,49 @@ func CFLPred(dst []uint8, w, h int, lumaQ3 []int32, dcPred []uint8, alpha int) {
 		dst[i] = uint8(v)
 	}
 }
+
+// CFLSubsample16 is the uint16 counterpart of [CFLSubsample]. Used by
+// the 10/12-bit CFL path.
+func CFLSubsample16(dst []int32, reconLuma []uint16, lumaW, lumaH, subX, subY int) {
+	chromaW := lumaW >> subX
+	chromaH := lumaH >> subY
+	stepX := 1 << subX
+	stepY := 1 << subY
+	boxArea := stepX * stepY
+	for r := 0; r < chromaH; r++ {
+		for c := 0; c < chromaW; c++ {
+			sum := 0
+			for dy := 0; dy < stepY; dy++ {
+				for dx := 0; dx < stepX; dx++ {
+					sum += int(reconLuma[(r*stepY+dy)*lumaW+(c*stepX+dx)])
+				}
+			}
+			dst[r*chromaW+c] = int32(sum * 8 / boxArea)
+		}
+	}
+}
+
+// CFLPred16 is the uint16 counterpart of [CFLPred]. Output is clipped
+// to [0, (1<<bitDepth)-1].
+func CFLPred16(dst []uint16, w, h int, lumaQ3 []int32, dcPred []uint16, alpha, bitDepth int) {
+	var sum int64
+	for _, v := range lumaQ3[:w*h] {
+		sum += int64(v)
+	}
+	half := int64(w * h / 2)
+	avg := int32((sum + half) / int64(w*h))
+	maxV := int32((1 << uint(bitDepth)) - 1)
+	for i := 0; i < w*h; i++ {
+		ac := lumaQ3[i] - avg
+		scaled := int32(alpha) * ac
+		scaled = (scaled + (1 << 5)) >> 6
+		v := int32(dcPred[i]) + scaled
+		switch {
+		case v < 0:
+			v = 0
+		case v > maxV:
+			v = maxV
+		}
+		dst[i] = uint16(v)
+	}
+}
