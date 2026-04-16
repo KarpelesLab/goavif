@@ -6,6 +6,7 @@ import (
 
 	"github.com/KarpelesLab/goavif/av1/cdef"
 	"github.com/KarpelesLab/goavif/av1/loopfilter"
+	"github.com/KarpelesLab/goavif/av1/lr"
 	"github.com/KarpelesLab/goavif/av1/obu"
 )
 
@@ -183,7 +184,71 @@ func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.
 
 	applyLoopFilter(fs, fh)
 	applyCDEF(fs, fh, sh)
+	applyLoopRestoration(fs, fh, sh)
 	return nil
+}
+
+// applyLoopRestoration runs AV1's loop restoration pass after CDEF.
+// Per-unit filter params would normally come from bitstream syntax
+// (use_wiener / use_sgrproj + delta-coded coefficients per spec
+// §7.17.1) — our decoder doesn't yet parse that signaling, so when
+// FrameRestorationType is NONE the pass short-circuits. For other
+// settings the driver runs but with zero-magnitude defaults that
+// produce output identical to the input (the CDFs to properly decode
+// per-unit params are the next layer of work).
+func applyLoopRestoration(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader) {
+	if !sh.EnableRestoration || !fh.LR.UsesLR {
+		return
+	}
+	unitSize := int(1) << uint(fh.LR.Log2RestorationUnitSize[0])
+	if unitSize < 64 {
+		unitSize = 64
+	}
+	// Luma pass.
+	if fh.LR.FrameRestorationType[0] != obu.RestorationNone {
+		lr.ApplyFrame(lr.Plane{
+			Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+		}, unitSize, defaultUnitParams(fh.LR.FrameRestorationType[0]))
+	}
+	if fs.Monochrome {
+		return
+	}
+	uvUnit := unitSize
+	if fh.LR.Log2RestorationUnitSize[1] > 0 {
+		uvUnit = int(1) << uint(fh.LR.Log2RestorationUnitSize[1])
+	}
+	for plane, pix := range [2][]uint8{fs.U, fs.V} {
+		typ := fh.LR.FrameRestorationType[1+plane]
+		if typ == obu.RestorationNone {
+			continue
+		}
+		lr.ApplyFrame(lr.Plane{
+			Pix: pix, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+		}, uvUnit, defaultUnitParams(typ))
+	}
+}
+
+// defaultUnitParams returns a no-effect param provider for the given
+// restoration type. Once use_wiener / use_sgrproj bitstream reads land,
+// this is the hook the tile decoder replaces with a real callback.
+func defaultUnitParams(rt uint8) lr.UnitFn {
+	switch rt {
+	case obu.RestorationWiener:
+		return func(x, y int) lr.UnitParams {
+			// Identity Wiener taps: output == input.
+			return lr.UnitParams{
+				Filter:      lr.FilterWiener,
+				WienerHoriz: lr.WienerTaps{0, 0, 0, 128},
+				WienerVert:  lr.WienerTaps{0, 0, 0, 128},
+			}
+		}
+	case obu.RestorationSGR:
+		return func(x, y int) lr.UnitParams {
+			// Both radii 0 → pass-through.
+			return lr.UnitParams{Filter: lr.FilterSGR, SGR: lr.SGRParams{}}
+		}
+	}
+	return func(x, y int) lr.UnitParams { return lr.UnitParams{Filter: lr.FilterNone} }
 }
 
 // splitTileGroup separates a tile group payload into numTiles independent
