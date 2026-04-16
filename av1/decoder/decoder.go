@@ -117,30 +117,66 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 	return f, nil
 }
 
-// runTileGroup assumes a single-tile payload (common for AVIF stills) and
-// walks all superblocks in it. Multi-tile frames need the tile_size_bytes
-// leb128 prefixes and per-tile entropy decoder resets; that path is
-// deferred.
+// runTileGroup walks all tiles described by the tile group payload
+// (spec §5.11.1). For a single-tile frame the whole payload is the
+// tile bitstream. For multi-tile frames the payload starts with a
+// tile_start_and_end_present_flag (inferred here) + per-tile
+// tile_size_minus_1 leb128 prefixes of width TileSizeBytes (derived
+// from the frame header's TileSizeBytesMinus1).
 func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader) error {
 	if len(tileData) == 0 {
 		return fmt.Errorf("av1/decoder: empty tile group payload")
 	}
-	if fh.Tile.TileCols > 1 || fh.Tile.TileRows > 1 {
-		return fmt.Errorf("%w: multi-tile frames not yet supported", ErrPixelDecodeUnimplemented)
-	}
-
-	td, err := NewTileDecoder(tileData, fh, sh)
-	if err != nil {
-		return err
+	totalTiles := int(fh.Tile.TileCols) * int(fh.Tile.TileRows)
+	if totalTiles <= 0 {
+		totalTiles = 1
 	}
 	sbSize := 64
 	if sh.Use128x128Superblock {
 		sbSize = 128
 	}
-	for sbY := 0; sbY < fs.Height; sbY += sbSize {
-		for sbX := 0; sbX < fs.Width; sbX += sbSize {
-			if err := td.DecodeSuperblock(fs, sbX, sbY); err != nil {
-				return err
+
+	tiles, err := splitTileGroup(tileData, totalTiles, int(fh.Tile.TileSizeBytesMinus1)+1)
+	if err != nil {
+		return err
+	}
+
+	// Decode every tile in raster order. The frame's superblock grid is
+	// partitioned by fh.Tile.MiColStarts / MiRowStarts.
+	cols := int(fh.Tile.TileCols)
+	miColStarts := fh.Tile.MiColStarts
+	miRowStarts := fh.Tile.MiRowStarts
+	for t := 0; t < totalTiles; t++ {
+		td, err := NewTileDecoder(tiles[t], fh, sh)
+		if err != nil {
+			return fmt.Errorf("tile %d init: %w", t, err)
+		}
+		col := t % cols
+		row := t / cols
+		var sbXStart, sbYStart, sbXEnd, sbYEnd int
+		if len(miColStarts) > col+1 {
+			sbXStart = int(miColStarts[col]) * 4
+			sbXEnd = int(miColStarts[col+1]) * 4
+		} else {
+			sbXEnd = fs.Width
+		}
+		if len(miRowStarts) > row+1 {
+			sbYStart = int(miRowStarts[row]) * 4
+			sbYEnd = int(miRowStarts[row+1]) * 4
+		} else {
+			sbYEnd = fs.Height
+		}
+		if sbXEnd > fs.Width {
+			sbXEnd = fs.Width
+		}
+		if sbYEnd > fs.Height {
+			sbYEnd = fs.Height
+		}
+		for sbY := sbYStart; sbY < sbYEnd; sbY += sbSize {
+			for sbX := sbXStart; sbX < sbXEnd; sbX += sbSize {
+				if err := td.DecodeSuperblock(fs, sbX, sbY); err != nil {
+					return fmt.Errorf("tile %d: %w", t, err)
+				}
 			}
 		}
 	}
@@ -148,6 +184,38 @@ func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.
 	applyLoopFilter(fs, fh)
 	applyCDEF(fs, fh, sh)
 	return nil
+}
+
+// splitTileGroup separates a tile group payload into numTiles independent
+// tile byte slices. For single-tile frames (numTiles == 1) the whole
+// payload is the one tile. Multi-tile frames have (numTiles - 1)
+// "tile_size_minus_1" prefixes of tileSizeBytes bytes; the final tile
+// has no size prefix (its bytes run to end of payload).
+func splitTileGroup(payload []byte, numTiles, tileSizeBytes int) ([][]byte, error) {
+	if numTiles <= 1 {
+		return [][]byte{payload}, nil
+	}
+	out := make([][]byte, 0, numTiles)
+	pos := 0
+	for t := 0; t < numTiles-1; t++ {
+		if pos+tileSizeBytes > len(payload) {
+			return nil, fmt.Errorf("tile_group truncated at size prefix for tile %d", t)
+		}
+		size := uint64(0)
+		for i := 0; i < tileSizeBytes; i++ {
+			size |= uint64(payload[pos+i]) << (uint(i) * 8)
+		}
+		size++ // stored as size_minus_1
+		pos += tileSizeBytes
+		if pos+int(size) > len(payload) {
+			return nil, fmt.Errorf("tile %d extends past tile_group (want %d, have %d)", t, size, len(payload)-pos)
+		}
+		out = append(out, payload[pos:pos+int(size)])
+		pos += int(size)
+	}
+	// Final tile: remaining bytes.
+	out = append(out, payload[pos:])
+	return out, nil
 }
 
 // applyCDEF runs the constrained directional enhancement filter after
