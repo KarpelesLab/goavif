@@ -88,8 +88,10 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       wired into the decoder after deblocking when sh.EnableCdef
 - [ ] CDEF: per-superblock cdef_idx signaling (currently uses
       strengths[0] as a sensible default)
-- [x] Loop restoration: Wiener 7-tap separable filter primitives (av1/lr)
-- [ ] Loop restoration: self-guided (SGR), per-unit signaling, frame driver
+- [x] Loop restoration: Wiener 7-tap separable + SGR (dual-pass box +
+      variance-adaptive a/b blend) primitives in av1/lr
+- [ ] Loop restoration: per-unit signaling + frame driver wiring
+      (tie into the decoder after CDEF)
 - [ ] Film grain synthesis
 
 ### Top level
