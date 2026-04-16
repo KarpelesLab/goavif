@@ -49,3 +49,71 @@ func TestValidateRejectsNonZeroSentinel(t *testing.T) {
 		t.Errorf("non-zero sentinel should fail validation")
 	}
 }
+
+func TestDefaultPartitionCDFValidate(t *testing.T) {
+	for i, c := range DefaultPartitionCDF {
+		if err := c.Validate(); err != nil {
+			t.Errorf("DefaultPartitionCDF[%d]: %v", i, err)
+		}
+	}
+}
+
+func TestDefaultKfYModeCDFValidate(t *testing.T) {
+	for a := 0; a < 5; a++ {
+		for l := 0; l < 5; l++ {
+			c := DefaultKfYModeCDF[a][l]
+			if err := c.Validate(); err != nil {
+				t.Errorf("DefaultKfYModeCDF[%d][%d]: %v", a, l, err)
+			}
+		}
+	}
+}
+
+func TestDefaultUVModeCDFValidate(t *testing.T) {
+	for cfl := 0; cfl < 2; cfl++ {
+		for ym := 0; ym < 13; ym++ {
+			c := DefaultUVModeCDF[cfl][ym]
+			if err := c.Validate(); err != nil {
+				t.Errorf("DefaultUVModeCDF[%d][%d]: %v", cfl, ym, err)
+			}
+		}
+	}
+}
+
+func TestDefaultAngleDeltaCDFValidate(t *testing.T) {
+	for i, c := range DefaultAngleDeltaCDF {
+		if err := c.Validate(); err != nil {
+			t.Errorf("DefaultAngleDeltaCDF[%d]: %v", i, err)
+		}
+	}
+}
+
+func TestDefaultTxSizeCDFValidate(t *testing.T) {
+	for cat := 0; cat < 4; cat++ {
+		for ctx := 0; ctx < 3; ctx++ {
+			c := DefaultTxSizeCDF[cat][ctx]
+			if err := c.Validate(); err != nil {
+				t.Errorf("DefaultTxSizeCDF[%d][%d]: %v", cat, ctx, err)
+			}
+		}
+	}
+}
+
+func TestDefaultTxfmPartitionCDFValidate(t *testing.T) {
+	for i, c := range DefaultTxfmPartitionCDF {
+		if err := c.Validate(); err != nil {
+			t.Errorf("DefaultTxfmPartitionCDF[%d]: %v", i, err)
+		}
+	}
+}
+
+func TestAomCDFInversion(t *testing.T) {
+	c := AomCDF(19132, 25510, 30392)
+	// Stored values should be 32768 - raw.
+	if c[0] != 32768-19132 || c[1] != 32768-25510 || c[2] != 32768-30392 {
+		t.Errorf("AomCDF inversion: got %v", c)
+	}
+	if c[3] != 0 || c[4] != 0 {
+		t.Errorf("sentinel/count: got %d, %d", c[3], c[4])
+	}
+}
