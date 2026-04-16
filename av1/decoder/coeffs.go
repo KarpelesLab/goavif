@@ -234,8 +234,8 @@ func (cd *CoeffDecoder) ReadCoefficients(
 		eob = numCoeffs
 	}
 
-	if numCoeffs > 64 {
-		return nil, fmt.Errorf("%w: TX > 8x8 not yet supported", ErrCoeffDecodeUnimplemented)
+	if numCoeffs > 256 {
+		return nil, fmt.Errorf("%w: TX > 16x16 not yet supported", ErrCoeffDecodeUnimplemented)
 	}
 
 	// Work buffer holding signed coefficient values in block-position order.

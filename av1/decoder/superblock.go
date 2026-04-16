@@ -386,21 +386,9 @@ func (td *TileDecoder) reconstructChromaResidual(
 	if td.coeff == nil {
 		return fmt.Errorf("%w: coeff decoder not initialized", ErrCoeffDecodeUnimplemented)
 	}
-	var txSizeIdx int
-	var nzMap []int8
-	var scan []int
-	switch {
-	case cw == 4 && ch == 4:
-		txSizeIdx = 0
-		nzMap = cdfs.NzMapCtxOffset4x4[:]
-		scan = transform.DefaultZigzagScan(4, 4)
-	case cw == 8 && ch == 8:
-		txSizeIdx = 1
-		nzMap = cdfs.NzMapCtxOffset8x8[:]
-		scan = transform.DefaultZigzagScan(8, 8)
-	default:
-		return fmt.Errorf("%w: chroma residual 4×4 or 8×8 only",
-			ErrCoeffDecodeUnimplemented)
+	txSizeIdx, nzMap, scan, txSize, err := selectTxParams(cw, ch)
+	if err != nil {
+		return err
 	}
 
 	numCoeffs := cw * ch
@@ -408,7 +396,6 @@ func (td *TileDecoder) reconstructChromaResidual(
 	if err != nil {
 		return err
 	}
-
 	qParams := quant.Params{
 		BaseQIndex: int(td.fh.Quant.BaseQIndex),
 		DeltaQUDc:  duDC,
@@ -426,13 +413,6 @@ func (td *TileDecoder) reconstructChromaResidual(
 		coeffs[i] = DequantCoeff(coeffs[i], i, qv)
 	}
 
-	var txSize transform.TxSize
-	switch txSizeIdx {
-	case 0:
-		txSize = transform.Tx4x4
-	case 1:
-		txSize = transform.Tx8x8
-	}
 	if err := transform.Inverse2D(coeffs, transform.DctDct, txSize); err != nil {
 		return err
 	}
@@ -455,21 +435,9 @@ func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, b
 	if td.coeff == nil {
 		return fmt.Errorf("%w: coeff decoder not initialized", ErrCoeffDecodeUnimplemented)
 	}
-	var txSizeIdx int
-	var nzMap []int8
-	var scan []int
-	switch {
-	case bw == 4 && bh == 4:
-		txSizeIdx = 0
-		nzMap = cdfs.NzMapCtxOffset4x4[:]
-		scan = transform.DefaultZigzagScan(4, 4)
-	case bw == 8 && bh == 8:
-		txSizeIdx = 1
-		nzMap = cdfs.NzMapCtxOffset8x8[:]
-		scan = transform.DefaultZigzagScan(8, 8)
-	default:
-		return fmt.Errorf("%w: residual decode only implemented for 4×4 and 8×8",
-			ErrCoeffDecodeUnimplemented)
+	txSizeIdx, nzMap, scan, txSize, err := selectTxParams(bw, bh)
+	if err != nil {
+		return err
 	}
 
 	numCoeffs := bw * bh
@@ -490,14 +458,6 @@ func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, b
 		coeffs[i] = DequantCoeff(coeffs[i], i, qv)
 	}
 
-	// Inverse 2D transform (DCT-DCT is the AVIF common case).
-	var txSize transform.TxSize
-	switch txSizeIdx {
-	case 0:
-		txSize = transform.Tx4x4
-	case 1:
-		txSize = transform.Tx8x8
-	}
 	if err := transform.Inverse2D(coeffs, transform.DctDct, txSize); err != nil {
 		return err
 	}
@@ -511,6 +471,26 @@ func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, b
 		}
 	}
 	return nil
+}
+
+// selectTxParams maps a block dimension to the tuple of values needed by
+// the coefficient decoder + inverse transform: TX_SIZE index (for CDFs),
+// nz_map position-offset table, zigzag scan, and the transform.TxSize
+// enum for Inverse2D.
+//
+// Currently supports square 4×4 / 8×8 / 16×16 — the shapes AVIF stills
+// typically use. Non-square and larger sizes return
+// ErrCoeffDecodeUnimplemented so the caller can bail cleanly.
+func selectTxParams(w, h int) (txSizeIdx int, nzMap []int8, scan []int, txSize transform.TxSize, err error) {
+	switch {
+	case w == 4 && h == 4:
+		return 0, cdfs.NzMapCtxOffset4x4[:], transform.DefaultZigzagScan(4, 4), transform.Tx4x4, nil
+	case w == 8 && h == 8:
+		return 1, cdfs.NzMapCtxOffset8x8[:], transform.DefaultZigzagScan(8, 8), transform.Tx8x8, nil
+	case w == 16 && h == 16:
+		return 2, cdfs.NzMapCtxOffset16x16[:], transform.DefaultZigzagScan(16, 16), transform.Tx16x16, nil
+	}
+	return 0, nil, nil, 0, fmt.Errorf("%w: TX %dx%d not yet supported", ErrCoeffDecodeUnimplemented, w, h)
 }
 
 // blockSizeLog returns the BSL (block-size-log) category for partition CDF
