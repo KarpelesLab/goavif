@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/KarpelesLab/goavif/av1/cdef"
 	"github.com/KarpelesLab/goavif/av1/loopfilter"
 	"github.com/KarpelesLab/goavif/av1/obu"
 )
@@ -145,7 +146,59 @@ func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.
 	}
 
 	applyLoopFilter(fs, fh)
+	applyCDEF(fs, fh, sh)
 	return nil
+}
+
+// applyCDEF runs the constrained directional enhancement filter after
+// deblocking. AV1 signals per-superblock cdef_idx bits selecting one of
+// Cdef.YPriStrengths[i] (plus matching secondary / UV strengths); the
+// per-SB signaling isn't yet parsed, so we apply strengths[0] to every
+// 8×8 block as a reasonable default approximating libavif encoder
+// behavior.
+func applyCDEF(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader) {
+	if !sh.EnableCdef {
+		return
+	}
+	damping := int(fh.Cdef.CdefDampingMinus3) + 3
+	// Luma.
+	pri := scaleCDEFPriStrength(int(fh.Cdef.YPriStrengths[0]))
+	sec := scaleCDEFSecStrength(int(fh.Cdef.YSecStrengths[0]))
+	cdef.ApplyFrame(cdef.Plane{
+		Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+	}, pri, sec, damping)
+	if fs.Monochrome {
+		return
+	}
+	pri = scaleCDEFPriStrength(int(fh.Cdef.UVPriStrengths[0]))
+	sec = scaleCDEFSecStrength(int(fh.Cdef.UVSecStrengths[0]))
+	// Chroma uses damping - 1 per spec.
+	dmp := damping - 1
+	cdef.ApplyFrame(cdef.Plane{
+		Pix: fs.U, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+	}, pri, sec, dmp)
+	cdef.ApplyFrame(cdef.Plane{
+		Pix: fs.V, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+	}, pri, sec, dmp)
+}
+
+// scaleCDEFPriStrength maps the 4-bit primary-strength signal 0..15 to
+// the per-spec multiplier used by Constrain(). Strength 0 disables the
+// primary filter; other values are lifted by the spec's ×4 factor.
+func scaleCDEFPriStrength(v int) int {
+	if v == 0 {
+		return 0
+	}
+	return v * 4
+}
+
+// scaleCDEFSecStrength maps the 2-bit secondary strength 0..3 (with a
+// slight bump to 4 when max) to the filter's clip limit.
+func scaleCDEFSecStrength(v int) int {
+	if v == 0 {
+		return 0
+	}
+	return v * 4
 }
 
 // applyLoopFilter runs the 4-tap narrow deblocking filter on the Y plane
