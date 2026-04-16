@@ -68,8 +68,14 @@ func TestDctDct16x16RoundTrip(t *testing.T) {
 	}
 }
 
-func TestUnsupported32x32ReturnsNil(t *testing.T) {
-	if RowOp(DctDct, Tx32x32) != nil {
-		t.Errorf("RowOp(DctDct, 32x32) should be nil until IDCT32 lands")
+func TestDctDct32x32Dispatches(t *testing.T) {
+	if RowOp(DctDct, Tx32x32) == nil {
+		t.Errorf("RowOp(DctDct, 32x32) should now dispatch to IDCT32")
+	}
+}
+
+func TestUnsupported64x64ReturnsNil(t *testing.T) {
+	if RowOp(DctDct, Tx64x64) != nil {
+		t.Errorf("RowOp(DctDct, 64x64) should be nil until IDCT64 lands")
 	}
 }
