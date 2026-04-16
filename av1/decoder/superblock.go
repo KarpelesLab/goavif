@@ -280,7 +280,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 				fs.Y[(y+r)*fs.YStride+(x+c)] = pred[r*bw+c]
 			}
 		}
-	} else if err := td.reconstructResidual(fs, pred, x, y, bw, bh); err != nil {
+	} else if err := td.reconstructResidual(fs, pred, x, y, bw, bh, yMode); err != nil {
 		return err
 	}
 
@@ -431,13 +431,21 @@ func (td *TileDecoder) reconstructChromaResidual(
 // splitting) and adds it to the prediction before writing to fs.Y. It
 // supports TX_4X4 and TX_8X8 today; larger blocks return
 // ErrCoeffDecodeUnimplemented.
-func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, bw, bh int) error {
+func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, bw, bh int, yMode IntraMode) error {
 	if td.coeff == nil {
 		return fmt.Errorf("%w: coeff decoder not initialized", ErrCoeffDecodeUnimplemented)
 	}
 	txSizeIdx, nzMap, scan, txSize, err := selectTxParams(bw, bh)
 	if err != nil {
 		return err
+	}
+
+	// Read tx_type per spec §6.10.15 before the coefficient levels.
+	txSet := ExtTxSetForIntra(bw, bh)
+	txType := transform.DctDct
+	if txSet > 0 {
+		raw := td.coeff.ReadIntraTxType(txSet, ExtTxSizeCtx(bw, bh), int(yMode))
+		txType = IntraTxTypeFor(txSet, raw)
 	}
 
 	numCoeffs := bw * bh
@@ -458,8 +466,12 @@ func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, b
 		coeffs[i] = DequantCoeff(coeffs[i], i, qv)
 	}
 
-	if err := transform.Inverse2D(coeffs, transform.DctDct, txSize); err != nil {
-		return err
+	if err := transform.Inverse2D(coeffs, txType, txSize); err != nil {
+		// Unsupported tx_type for this size — fall back to DCT_DCT to at
+		// least produce a visible block rather than a panic.
+		if err2 := transform.Inverse2D(coeffs, transform.DctDct, txSize); err2 != nil {
+			return err2
+		}
 	}
 
 	// Reconstruct: pred + residual, clipped to 0..255.

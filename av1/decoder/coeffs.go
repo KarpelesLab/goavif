@@ -29,6 +29,8 @@ type CoeffDecoder struct {
 	coeffBaseMultiCDF    [5][2][42]cdfs.CDF
 	coeffBrMultiCDF      [5][2][21]cdfs.CDF
 	dcSignCDF            [2][3]cdfs.CDF
+	intraExtTxCDFSet1    [4][13]cdfs.CDF
+	intraExtTxCDFSet2    [4][13]cdfs.CDF
 }
 
 // InitCoeffDecoder populates a CoeffDecoder from the defaults, using Q
@@ -81,6 +83,12 @@ func InitCoeffDecoder(dec *entropy.Decoder, qCtx int) *CoeffDecoder {
 	for p := 0; p < 2; p++ {
 		for ctx := 0; ctx < 3; ctx++ {
 			cd.dcSignCDF[p][ctx] = append(cdfs.CDF(nil), cdfs.DefaultDCSignCDF[p][ctx]...)
+		}
+	}
+	for sz := 0; sz < 4; sz++ {
+		for m := 0; m < 13; m++ {
+			cd.intraExtTxCDFSet1[sz][m] = append(cdfs.CDF(nil), cdfs.DefaultIntraExtTxCDFSet1[sz][m]...)
+			cd.intraExtTxCDFSet2[sz][m] = append(cdfs.CDF(nil), cdfs.DefaultIntraExtTxCDFSet2[sz][m]...)
 		}
 	}
 	return cd
@@ -200,6 +208,37 @@ func (cd *CoeffDecoder) ReadDCSign(planeType, ctx int) bool {
 		ctx = 2
 	}
 	return cd.dec.DecodeSymbol(cd.dcSignCDF[planeType][ctx]) != 0
+}
+
+// ReadIntraTxType reads an intra-frame tx_type symbol from the bitstream
+// per spec §6.10.15. txSet selects which CDF family: 1 (AOM_CDF7 — 7 tx
+// types, smaller blocks) or 2 (AOM_CDF5 — 5 tx types, larger blocks).
+// txSizeCtx is the 4-way "ext_tx_size" index. intraMode is the Y intra
+// mode (0..12).
+//
+// The returned integer is a raw tx_type index; callers map it to the
+// [transform.TxType] enum via the spec's EXT_TX_SET_TO_TYPE tables
+// (see [IntraTxTypeFor]).
+func (cd *CoeffDecoder) ReadIntraTxType(txSet, txSizeCtx, intraMode int) int {
+	if txSizeCtx < 0 {
+		txSizeCtx = 0
+	}
+	if txSizeCtx >= 4 {
+		txSizeCtx = 3
+	}
+	if intraMode < 0 {
+		intraMode = 0
+	}
+	if intraMode >= 13 {
+		intraMode = 12
+	}
+	switch txSet {
+	case 1:
+		return cd.dec.DecodeSymbol(cd.intraExtTxCDFSet1[txSizeCtx][intraMode])
+	case 2:
+		return cd.dec.DecodeSymbol(cd.intraExtTxCDFSet2[txSizeCtx][intraMode])
+	}
+	return 0 // set 0: implicit DCT_DCT
 }
 
 // ReadUniformBit reads an unadapted 50/50 bit from the arithmetic-coded
