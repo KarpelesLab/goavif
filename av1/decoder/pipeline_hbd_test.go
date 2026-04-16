@@ -74,3 +74,57 @@ func bdName(bd int) string {
 	}
 	return "unknown"
 }
+
+// TestHBDEndToEndTileDecode exercises the full 10/12-bit decode path:
+// DecodeSuperblock walks partitions and lands predict + reconstruct
+// into the Y16/U16/V16 planes, then every frame-level filter runs.
+// Synthetic bitstream; we only assert no panic + in-range samples.
+func TestHBDEndToEndTileDecode(t *testing.T) {
+	for _, bd := range []int{10, 12} {
+		t.Run(bdName(bd), func(t *testing.T) {
+			sh := minimalSeqHeader()
+			sh.Color.BitDepth = uint8(bd)
+
+			fh := minimalFrameHeader()
+
+			tileData := make([]byte, 256)
+			for i := range tileData {
+				tileData[i] = byte((i*17 + 3) & 0xFF)
+			}
+
+			td, err := NewTileDecoder(tileData, fh, sh)
+			if err != nil {
+				t.Fatalf("NewTileDecoder: %v", err)
+			}
+			fs := NewFrameStateHBD(
+				int(fh.FrameWidth), int(fh.FrameHeight),
+				int(sh.Color.SubsamplingX), int(sh.Color.SubsamplingY),
+				sh.Color.Monochrome, bd,
+			)
+
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("HBD pipeline panic: %v", r)
+				}
+			}()
+			_ = td.DecodeSuperblock(fs, 0, 0)
+
+			applyLoopFilter(fs, fh)
+			applyCDEF(fs, fh, sh)
+			applyLoopRestoration(fs, fh, sh)
+			applyFilmGrain(fs, fh, sh)
+
+			maxV := uint16((1 << uint(bd)) - 1)
+			for i, v := range fs.Y16 {
+				if v > maxV {
+					t.Fatalf("Y16[%d]=%d exceeded %d-bit max", i, v, bd)
+				}
+			}
+			for i, v := range fs.U16 {
+				if v > maxV {
+					t.Fatalf("U16[%d]=%d exceeded %d-bit max", i, v, bd)
+				}
+			}
+		})
+	}
+}

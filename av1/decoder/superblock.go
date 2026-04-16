@@ -446,6 +446,20 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 		bh = fs.Height - y
 	}
 
+	// Bit-depth branch. The 10/12-bit path writes into Y16/U16/V16;
+	// the 8-bit path writes into Y/U/V. Mode info is shared.
+	if fs.BitDepth > 8 {
+		if err := td.decodeLumaBlock16(fs, yMode, x, y, bw, bh, skip, segID); err != nil {
+			return err
+		}
+		if !fs.Monochrome {
+			if err := td.decodeChromaBlock16(fs, uvMode, x, y, bw, bh, skip, cflAlphaU, cflAlphaV, segID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	// Build neighbor samples and run intra prediction.
 	above := make([]uint8, bw)
 	left := make([]uint8, bh)
