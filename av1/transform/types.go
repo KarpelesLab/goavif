@@ -161,6 +161,12 @@ func colKind(ty TxType) kind {
 	return kindDCT
 }
 
+// TxSizeWidth returns the width in samples for a transform size.
+func TxSizeWidth(sz TxSize) int { return rowLen(sz) }
+
+// TxSizeHeight returns the height in samples for a transform size.
+func TxSizeHeight(sz TxSize) int { return colLen(sz) }
+
 // rowLen and colLen return the transform's 1D dimensions in samples.
 func rowLen(sz TxSize) int {
 	switch sz {
