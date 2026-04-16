@@ -208,9 +208,15 @@ func applyLoopRestoration(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceH
 	}
 	// Luma pass.
 	if fh.LR.FrameRestorationType[0] != obu.RestorationNone {
-		lr.ApplyFrame(lr.Plane{
-			Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
-		}, unitSize, defaultUnitParams(fh.LR.FrameRestorationType[0]))
+		if fs.BitDepth > 8 {
+			lr.ApplyFrame16(lr.Plane16{
+				Pix: fs.Y16, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+			}, unitSize, defaultUnitParams(fh.LR.FrameRestorationType[0]), fs.BitDepth)
+		} else {
+			lr.ApplyFrame(lr.Plane{
+				Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+			}, unitSize, defaultUnitParams(fh.LR.FrameRestorationType[0]))
+		}
 	}
 	if fs.Monochrome {
 		return
@@ -219,14 +225,26 @@ func applyLoopRestoration(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceH
 	if fh.LR.Log2RestorationUnitSize[1] > 0 {
 		uvUnit = int(1) << uint(fh.LR.Log2RestorationUnitSize[1])
 	}
-	for plane, pix := range [2][]uint8{fs.U, fs.V} {
-		typ := fh.LR.FrameRestorationType[1+plane]
-		if typ == obu.RestorationNone {
-			continue
+	if fs.BitDepth > 8 {
+		for plane, pix := range [2][]uint16{fs.U16, fs.V16} {
+			typ := fh.LR.FrameRestorationType[1+plane]
+			if typ == obu.RestorationNone {
+				continue
+			}
+			lr.ApplyFrame16(lr.Plane16{
+				Pix: pix, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+			}, uvUnit, defaultUnitParams(typ), fs.BitDepth)
 		}
-		lr.ApplyFrame(lr.Plane{
-			Pix: pix, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
-		}, uvUnit, defaultUnitParams(typ))
+	} else {
+		for plane, pix := range [2][]uint8{fs.U, fs.V} {
+			typ := fh.LR.FrameRestorationType[1+plane]
+			if typ == obu.RestorationNone {
+				continue
+			}
+			lr.ApplyFrame(lr.Plane{
+				Pix: pix, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+			}, uvUnit, defaultUnitParams(typ))
+		}
 	}
 }
 
@@ -290,16 +308,19 @@ func applyFilmGrain(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader)
 			ScalingShift:          scalingShift,
 			ClipToRestrictedRange: g.ClipToRestrictedRange,
 		}
-		filmgrain.ApplyWithTemplate(fs.Y, fs.Width, fs.Height, fs.YStride, &lut, &tpl, p)
+		if fs.BitDepth > 8 {
+			filmgrain.ApplyWithTemplate16(fs.Y16, fs.Width, fs.Height, fs.YStride, &lut, &tpl, p, fs.BitDepth)
+		} else {
+			filmgrain.ApplyWithTemplate(fs.Y, fs.Width, fs.Height, fs.YStride, &lut, &tpl, p)
+		}
 	}
 
 	if fs.Monochrome {
 		return
 	}
-	applyChromaGrain := func(plane []uint8, numPoints uint8,
-		values, scales [10]uint8, arCoeffs [25]int8) {
+	buildChromaTemplate := func(numPoints uint8, values, scales [10]uint8, arCoeffs [25]int8) (filmgrain.ScalingLUT, filmgrain.Template, *filmgrain.Params, bool) {
 		if numPoints == 0 {
-			return
+			return filmgrain.ScalingLUT{}, filmgrain.Template{}, nil, false
 		}
 		points := make([]filmgrain.Point, numPoints)
 		for i := uint8(0); i < numPoints; i++ {
@@ -317,10 +338,22 @@ func applyFilmGrain(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader)
 			ScalingShift:          scalingShift,
 			ClipToRestrictedRange: g.ClipToRestrictedRange,
 		}
-		filmgrain.ApplyWithTemplate(plane, fs.UVWidth, fs.UVHeight, fs.UVStride, &lut, &tpl, p)
+		return lut, tpl, p, true
 	}
-	applyChromaGrain(fs.U, g.NumCbPoints, g.PointCbValue, g.PointCbScaling, g.ARCoeffsCb)
-	applyChromaGrain(fs.V, g.NumCrPoints, g.PointCrValue, g.PointCrScaling, g.ARCoeffsCr)
+	applyChroma := func(plane8 []uint8, plane16 []uint16, numPoints uint8,
+		values, scales [10]uint8, arCoeffs [25]int8) {
+		lut, tpl, p, ok := buildChromaTemplate(numPoints, values, scales, arCoeffs)
+		if !ok {
+			return
+		}
+		if fs.BitDepth > 8 {
+			filmgrain.ApplyWithTemplate16(plane16, fs.UVWidth, fs.UVHeight, fs.UVStride, &lut, &tpl, p, fs.BitDepth)
+		} else {
+			filmgrain.ApplyWithTemplate(plane8, fs.UVWidth, fs.UVHeight, fs.UVStride, &lut, &tpl, p)
+		}
+	}
+	applyChroma(fs.U, fs.U16, g.NumCbPoints, g.PointCbValue, g.PointCbScaling, g.ARCoeffsCb)
+	applyChroma(fs.V, fs.V16, g.NumCrPoints, g.PointCrValue, g.PointCrScaling, g.ARCoeffsCr)
 }
 
 // splitTileGroup separates a tile group payload into numTiles independent
@@ -371,9 +404,15 @@ func applyCDEF(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader) {
 		return scaleCDEFPriStrength(int(fh.Cdef.YPriStrengths[idx])),
 			scaleCDEFSecStrength(int(fh.Cdef.YSecStrengths[idx]))
 	}
-	cdef.ApplyFramePerSB(cdef.Plane{
-		Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
-	}, yStrength, damping)
+	if fs.BitDepth > 8 {
+		cdef.ApplyFramePerSB16(cdef.Plane16{
+			Pix: fs.Y16, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+		}, cdef.StrengthFn16(yStrength), damping, fs.BitDepth)
+	} else {
+		cdef.ApplyFramePerSB(cdef.Plane{
+			Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+		}, yStrength, damping)
+	}
 	if fs.Monochrome {
 		return
 	}
@@ -386,12 +425,21 @@ func applyCDEF(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader) {
 		return scaleCDEFPriStrength(int(fh.Cdef.UVPriStrengths[idx])),
 			scaleCDEFSecStrength(int(fh.Cdef.UVSecStrengths[idx]))
 	}
-	cdef.ApplyFramePerSB(cdef.Plane{
-		Pix: fs.U, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
-	}, uvStrength, dmp)
-	cdef.ApplyFramePerSB(cdef.Plane{
-		Pix: fs.V, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
-	}, uvStrength, dmp)
+	if fs.BitDepth > 8 {
+		cdef.ApplyFramePerSB16(cdef.Plane16{
+			Pix: fs.U16, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+		}, cdef.StrengthFn16(uvStrength), dmp, fs.BitDepth)
+		cdef.ApplyFramePerSB16(cdef.Plane16{
+			Pix: fs.V16, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+		}, cdef.StrengthFn16(uvStrength), dmp, fs.BitDepth)
+	} else {
+		cdef.ApplyFramePerSB(cdef.Plane{
+			Pix: fs.U, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+		}, uvStrength, dmp)
+		cdef.ApplyFramePerSB(cdef.Plane{
+			Pix: fs.V, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+		}, uvStrength, dmp)
+	}
 }
 
 // cdefIdxAt returns the cdef_idx for the 64×64 SB containing plane
@@ -434,16 +482,26 @@ func scaleCDEFSecStrength(v int) int {
 // the per-block transform grid. This simpler form is sufficient for
 // intra-only stills where TX sizes rarely cross MB boundaries without
 // being aligned.
+//
+// The uint8 and uint16 (10/12-bit) paths diverge only in the filter
+// primitives — threshold derivation, edge-grid walk and block layout
+// are shared.
 func applyLoopFilter(fs *FrameState, fh *obu.FrameHeader) {
 	if fh.LoopFilter.LevelY0 == 0 && fh.LoopFilter.LevelY1 == 0 {
 		return
 	}
 	th := loopfilter.DeriveThresholds(int(fh.LoopFilter.LevelY0), int(fh.LoopFilter.Sharpness))
-	yPlane := loopfilter.Plane{
-		Pix: fs.Y, Stride: fs.YStride,
-		Width: fs.Width, Height: fs.Height,
+	grid := loopfilter.UniformGrid(fs.Width, fs.Height, 8, 8)
+	if fs.BitDepth > 8 {
+		th16 := loopfilter.ScaleThresholds16(th, fs.BitDepth)
+		loopfilter.ApplyFrameNarrow16(loopfilter.Plane16{
+			Pix: fs.Y16, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+		}, grid, th16)
+	} else {
+		loopfilter.ApplyFrameNarrow(loopfilter.Plane{
+			Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
+		}, grid, th)
 	}
-	loopfilter.ApplyFrameNarrow(yPlane, loopfilter.UniformGrid(fs.Width, fs.Height, 8, 8), th)
 
 	if !fs.Monochrome {
 		uvLvl := int(fh.LoopFilter.LevelU)
@@ -451,14 +509,22 @@ func applyLoopFilter(fs *FrameState, fh *obu.FrameHeader) {
 			return
 		}
 		thUV := loopfilter.DeriveThresholds(uvLvl, int(fh.LoopFilter.Sharpness))
-		grid := loopfilter.UniformGrid(fs.UVWidth, fs.UVHeight, 8, 8)
-		loopfilter.ApplyFrameNarrow(loopfilter.Plane{
-			Pix: fs.U, Stride: fs.UVStride,
-			Width: fs.UVWidth, Height: fs.UVHeight,
-		}, grid, thUV)
-		loopfilter.ApplyFrameNarrow(loopfilter.Plane{
-			Pix: fs.V, Stride: fs.UVStride,
-			Width: fs.UVWidth, Height: fs.UVHeight,
-		}, grid, thUV)
+		uvGrid := loopfilter.UniformGrid(fs.UVWidth, fs.UVHeight, 8, 8)
+		if fs.BitDepth > 8 {
+			th16 := loopfilter.ScaleThresholds16(thUV, fs.BitDepth)
+			loopfilter.ApplyFrameNarrow16(loopfilter.Plane16{
+				Pix: fs.U16, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+			}, uvGrid, th16)
+			loopfilter.ApplyFrameNarrow16(loopfilter.Plane16{
+				Pix: fs.V16, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+			}, uvGrid, th16)
+		} else {
+			loopfilter.ApplyFrameNarrow(loopfilter.Plane{
+				Pix: fs.U, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+			}, uvGrid, thUV)
+			loopfilter.ApplyFrameNarrow(loopfilter.Plane{
+				Pix: fs.V, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
+			}, uvGrid, thUV)
+		}
 	}
 }

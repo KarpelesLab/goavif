@@ -137,8 +137,13 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       Filter4_16 + ApplyFrameNarrow16 (av1/loopfilter/narrow16.go,
       frame16.go). Clip bounds widen with bit depth; +4/+3
       rounding stays 8-bit per libaom's highbd_filter4.
-- [ ] 10/12-bit decode path: TileDecoder branches on bit-depth to
-      pick the right predict / reconstruct / filter variants.
+- [x] 10/12-bit filter dispatch: applyLoopFilter / applyCDEF /
+      applyLoopRestoration / applyFilmGrain all branch on
+      fs.BitDepth and route to the uint16 primitives when >8.
+      HBD pipeline integration test covers 10- and 12-bit at both
+      luma and chroma.
+- [ ] 10/12-bit TileDecoder decode path: predict + reconstruct +
+      coefficient write land in Y16 / U16 / V16 when fs.BitDepth > 8.
 - [x] 10/12-bit film grain: filmgrain.ApplyWithTemplate16 tiles
       32×32 patches with bit-depth-aware clipping and restricted-
       range bounds scaled per bit depth (av1/filmgrain/apply16.go).
