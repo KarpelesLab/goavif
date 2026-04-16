@@ -34,26 +34,31 @@ Minimum viable decoder: decode a single keyframe from an AVIF still to
       (4×5×2×21), coeff_base_eob_multi (Q=0)
 - [ ] `av1/entropy/cdfs`: Q contexts 1-3 for txb_skip & coeff_base_eob,
       segment_id, filter_intra, palette, kf_mode context offsets
-- [x] `av1/predict`: DC, V, H, Paeth, Smooth/V/H, D45, D135, CFL
-- [ ] `av1/predict`: D113/D157/D203/D67 + angle delta sub-pixel form,
-      filter-intra, recursive intra
+- [x] `av1/predict`: DC, V, H, Paeth, Smooth/V/H, full directional
+      (D45/D67/D113/D135/D157/D203 via DirectionalPred), CFL scaffold
+- [ ] `av1/predict`: angle_delta sub-pixel refinement, filter-intra,
+      recursive intra, proper CFL (luma AC × signed alpha)
 - [x] `av1/transform`: IDCT4/8/16, IADST4, IDTX4/8/16/32, IFLIPADST4,
-      FDCT4, Inverse2D wrapper, RowOp/ColOp dispatch, DefaultZigzagScan
-- [ ] `av1/transform`: IDCT32/64, IADST8/16, FLIPADST8/16, WHT,
-      forward-side counterparts for the encoder
+      FDCT4, Inverse2D wrapper, RowOp/ColOp dispatch (4/8/16-point),
+      DefaultZigzagScan
+- [ ] `av1/transform`: IDCT32/64, IADST8/16, FLIPADST8/16, WHT
 - [x] `av1/quant`: 8-bit DC/AC lookup tables + Params.Compute per plane
 - [ ] `av1/quant`: 10/12-bit tables, Q-matrix / segment-Q application
-- [x] `av1/decoder`: container → seq header → frame header pipeline; partition
-      tree walker; PredictIntra dispatch; per-block DecodeBlock helper;
-      DequantCoeff
-- [x] `av1/decoder`: TileDecoder reads partition + Y/UV mode + angle delta +
-      skip symbols from real bitstream via entropy decoder + CDF tables
-- [ ] `av1/decoder`: coefficient decoding (eob + coeff levels) → dequant →
-      inverse transform → full pixel reconstruction
-- [ ] `av1/decoder`: tile-group orchestrator driving superblock loop
+- [x] `av1/decoder`: full pipeline — container → seq header → frame
+      header → TileDecoder + CoeffDecoder → partition tree → per-leaf
+      mode decode → intra predict → coefficient decode + dequant +
+      inverse transform + reconstruct → loop filter → FrameState.Y/U/V
+- [x] `av1/decoder`: CoeffDecoder reads txb_skip / eob / coeff_base /
+      coeff_br / dc_sign / AC signs; sig_coef and level context
+      derivation landed for 4×4, 8×8, 16×16
+- [ ] `av1/decoder`: TX_32x32/64x64, non-square TX, multi-tile frames,
+      intra_tx_type signaling, segment_id, filter_intra
 - [x] Reconstruction: per-block ReconstructBlock done
-- [x] Loop filter: 4-tap narrow + 8-tap wide + frame-level driver
-- [ ] Loop filter: 14-tap widest, mask derivation from filter_level/QP/sharpness
+- [x] Loop filter: 4-tap narrow + 8-tap wide + frame-level driver;
+      DeriveThresholds from filter_level / sharpness; Y+UV pass wired
+      into the decoder after superblock loop
+- [ ] Loop filter: 14-tap widest, per-edge TX-grid tracking (vs uniform
+      8-pixel stride)
 - [ ] CDEF (constrained directional enhancement filter)
 - [x] `colorspace`: YUV→RGB BT.601/709/2020 + Studio/Full range
 - [x] `goavif.Decode`: end-to-end pipeline wired (returns
