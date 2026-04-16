@@ -40,6 +40,7 @@ type TileDecoder struct {
 	skipCDF       [3]cdfs.CDF
 	cflSignCDF    cdfs.CDF
 	cflAlphaCDF   [6]cdfs.CDF
+	segCDF        [3]cdfs.CDF
 }
 
 // NewTileDecoder initializes a tile decoder for the given tile data.
@@ -104,6 +105,40 @@ func (td *TileDecoder) initCDFs() {
 	for i := range cdfs.DefaultCFLAlphaCDF {
 		td.cflAlphaCDF[i] = append(cdfs.CDF(nil), cdfs.DefaultCFLAlphaCDF[i]...)
 	}
+	for i := range cdfs.DefaultSpatialPredSegTreeCDF {
+		td.segCDF[i] = append(cdfs.CDF(nil), cdfs.DefaultSpatialPredSegTreeCDF[i]...)
+	}
+}
+
+// DecodeSegmentID reads the per-block segment_id symbol using the
+// spatial-prediction CDF. ctx is the 3-way neighbor context per spec:
+//
+//	0 = neither neighbor available / both zero
+//	1 = one neighbor non-zero
+//	2 = both neighbors non-zero
+func (td *TileDecoder) DecodeSegmentID(ctx int) uint8 {
+	if ctx < 0 {
+		ctx = 0
+	}
+	if ctx >= 3 {
+		ctx = 2
+	}
+	return uint8(td.dec.DecodeSymbol(td.segCDF[ctx]))
+}
+
+// SegmentIDCtx returns the 3-way neighbor context for spatial segment
+// prediction, following the spec's max-based rule: the number of
+// distinct non-zero segment_id values among the available above and
+// left neighbors, clamped to [0, 2].
+func SegmentIDCtx(aboveID, leftID uint8, haveAbove, haveLeft bool) int {
+	var count int
+	if haveAbove && aboveID != 0 {
+		count++
+	}
+	if haveLeft && leftID != 0 {
+		count++
+	}
+	return count
 }
 
 // CFLJointSign represents the 8 possible joint-sign values for the U and

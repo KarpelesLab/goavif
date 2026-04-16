@@ -14,6 +14,7 @@ type ModeInfo struct {
 	Mode      IntraMode
 	UVMode    IntraMode
 	Skip      bool
+	SegmentID uint8
 	Predicted bool // true once intra prediction has been applied
 }
 
@@ -199,11 +200,23 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 	miRow := y >> 2
 	aboveMode := DCPred
 	leftMode := DCPred
-	if miRow > 0 && miRow-1 < fs.MIRows && miCol < fs.MICols {
-		aboveMode = fs.GetMI(miCol, miRow-1).Mode
+	var aboveSeg, leftSeg uint8
+	miHaveAbove := miRow > 0 && miRow-1 < fs.MIRows && miCol < fs.MICols
+	miHaveLeft := miCol > 0 && miCol-1 < fs.MICols && miRow < fs.MIRows
+	if miHaveAbove {
+		above := fs.GetMI(miCol, miRow-1)
+		aboveMode = above.Mode
+		aboveSeg = above.SegmentID
 	}
-	if miCol > 0 && miCol-1 < fs.MICols && miRow < fs.MIRows {
-		leftMode = fs.GetMI(miCol-1, miRow).Mode
+	if miHaveLeft {
+		left := fs.GetMI(miCol-1, miRow)
+		leftMode = left.Mode
+		leftSeg = left.SegmentID
+	}
+	// segment_id: only signaled when segmentation is enabled + update_map.
+	var segID uint8
+	if td.fh.Segmentation.Enabled && td.fh.Segmentation.UpdateMap {
+		segID = td.DecodeSegmentID(SegmentIDCtx(aboveSeg, leftSeg, miHaveAbove, miHaveLeft))
 	}
 	yMode := td.DecodeIntraYMode(modeCtxBucket(aboveMode), modeCtxBucket(leftMode))
 	skip := td.DecodeSkip(0)
@@ -244,6 +257,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 			mi.Mode = yMode
 			mi.UVMode = uvMode
 			mi.Skip = skip
+			mi.SegmentID = segID
 		}
 	}
 
