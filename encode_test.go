@@ -46,23 +46,49 @@ func TestEncodeNilImage(t *testing.T) {
 }
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
-	src := image.NewRGBA(image.Rect(0, 0, 64, 64))
-	var buf bytes.Buffer
-	if err := Encode(&buf, src, nil); err != nil {
-		t.Fatalf("Encode: %v", err)
+	for _, sz := range []int{64, 128, 256} {
+		t.Run(dimName(sz), func(t *testing.T) {
+			src := image.NewRGBA(image.Rect(0, 0, sz, sz))
+			var buf bytes.Buffer
+			if err := Encode(&buf, src, nil); err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			img, err := Decode(bytes.NewReader(buf.Bytes()))
+			if err != nil {
+				t.Fatalf("Decode %dx%d: %v", sz, sz, err)
+			}
+			if img == nil {
+				t.Fatal("Decode returned nil image")
+			}
+			if img.Bounds().Dx() != sz || img.Bounds().Dy() != sz {
+				t.Fatalf("decoded size %v, want %dx%d", img.Bounds(), sz, sz)
+			}
+		})
 	}
-	// Try to decode our own output. The current encoder emits an
-	// all-skip PARTITION_NONE + DC_PRED frame, so pixel output is a
-	// constant mid-grey — the goal is just that the decoder
-	// consumes the bitstream without error.
-	img, err := Decode(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
+}
+
+func dimName(n int) string {
+	return "x" + itoa(n)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
 	}
-	if img == nil {
-		t.Fatal("Decode returned nil image")
+	neg := n < 0
+	if neg {
+		n = -n
 	}
-	if img.Bounds().Dx() != 64 || img.Bounds().Dy() != 64 {
-		t.Fatalf("decoded size %v, want 64x64", img.Bounds())
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
 	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }

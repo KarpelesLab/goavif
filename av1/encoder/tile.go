@@ -62,14 +62,14 @@ func writeSuperblock(enc *entropy.Encoder, x, y, sbSize int, sh *obu.SequenceHea
 }
 
 func writePartitionNone(enc *entropy.Encoder, bs int) {
-	// bslCtx = blockSizeLog bucket. For 64x64 it's 2, for 128x128 it's 3.
-	// See decoder.decodePartitionNode / blockSizeLog. bslCtx*4 + ctx.
-	bslCtx := 2 // 64x64
+	// bsl bucket per decoder's blockSizeLog: 3 = 64x64, 4 = 128x128.
+	// decoder.decodePartitionNode computes cdfIdx = bsl*4 + ctx.
+	bsl := 3 // 64x64
 	if bs == 128 {
-		bslCtx = 3
+		bsl = 4
 	}
-	ctx := 0 // above/left = 0 at SB start
-	cdfIdx := bslCtx*4 + ctx
+	ctx := 0 // above/left = 0 at SB start (decoder uses same)
+	cdfIdx := bsl*4 + ctx
 	if cdfIdx >= len(cdfs.DefaultPartitionCDF) {
 		return
 	}

@@ -28,8 +28,10 @@ func WriteKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 	// show_frame = true (implicit)
 	// error_resilient_mode = true (implicit, derived from KeyFrame+ShowFrame)
 
-	// disable_cdf_update = 0
-	w.F(1, 0)
+	// disable_cdf_update = 1 — the baseline encoder does not track
+	// adaptive CDF state across symbols, so we explicitly turn off
+	// the decoder's adaptation too.
+	w.F(1, 1)
 	// Screen content tools: SeqForceScreenContentTools is SELECT in our
 	// sequence header's reduced mode (not coded there), so default to 0.
 	// Actually, per spec in reduced mode, SeqForceScreenContentTools is
