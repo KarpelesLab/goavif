@@ -114,13 +114,21 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
 - [x] `goavif.DecodeConfig`: works standalone (ispe / pixi / av1C)
 - [x] `cmd/goavif-info`: container/sequence-header inspector CLI
 - [ ] Golden tests vs dav1d on AOM intra-only test vectors
-- [x] 10/12-bit intra predictors (av1/predict/intra16.go): uint16
-      DC/V/H/Paeth/Smooth/SmoothV/SmoothH with bit-depth-aware DC
-      fallback. Directional predictors + reconstruction path still
-      pending.
-- [ ] 10/12-bit full plane pipeline: FrameState uint16 plane storage,
-      uint16 directional intra, uint16 reconstruction, widened
-      colorspace output
+- [x] 10/12-bit intra predictors: full uint16 coverage in
+      av1/predict — DC/V/H/Paeth/Smooth/SmoothV/SmoothH
+      (intra16.go), D45/D67/D113/D135/D157/D203 directional
+      (intra16_dr.go), CFL subsample + pred (intra_cfl.go).
+- [x] 10/12-bit reconstruction: Reconstruct16Block
+      (av1/decoder/reconstruct.go) adds residual to uint16 pred and
+      clips to (1<<bitDepth)-1.
+- [x] 10/12-bit PredictIntra16 dispatch with Neighbors16 + half-range
+      edge fallback (av1/decoder/predict_dispatch.go).
+- [ ] 10/12-bit plane storage: FrameState Plane16 fields + bit-depth
+      switch in NewFrameState.
+- [ ] 10/12-bit decode path: TileDecoder branches on bit-depth to
+      pick the right predict / reconstruct / filter variants.
+- [ ] 10/12-bit colorspace output: image.YCbCr with 16-bit backing
+      buffers + 10/12-bit-aware YUV→RGB matrices.
 
 ## Phase 3 — spec-complete decoder
 
