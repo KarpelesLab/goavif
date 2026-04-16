@@ -123,8 +123,9 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       clips to (1<<bitDepth)-1.
 - [x] 10/12-bit PredictIntra16 dispatch with Neighbors16 + half-range
       edge fallback (av1/decoder/predict_dispatch.go).
-- [ ] 10/12-bit plane storage: FrameState Plane16 fields + bit-depth
-      switch in NewFrameState.
+- [x] 10/12-bit plane storage: FrameState gains Y16 / U16 / V16
+      uint16 buffers + BitDepth field. NewFrameStateHBD allocates
+      uint16 planes; the 8-bit path is unchanged.
 - [ ] 10/12-bit decode path: TileDecoder branches on bit-depth to
       pick the right predict / reconstruct / filter variants.
 - [ ] 10/12-bit colorspace output: image.YCbCr with 16-bit backing

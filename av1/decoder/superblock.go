@@ -45,12 +45,39 @@ type FrameState struct {
 	CdefIdx []uint8
 	SBCols  int
 	SBRows  int
+
+	// BitDepth is the frame's sample bit depth (8, 10, or 12). When
+	// BitDepth > 8 the decoder writes into Y16 / U16 / V16 instead of
+	// the uint8 Y / U / V planes.
+	BitDepth int
+
+	// Y16 / U16 / V16 are allocated when BitDepth > 8. For 8-bit they
+	// remain nil and the uint8 planes are used.
+	Y16      []uint16
+	U16, V16 []uint16
 }
 
-// NewFrameState allocates a blank frame ready for decoding. subX/subY are
-// chroma subsampling factors: 0 = full resolution, 1 = half. monochrome
-// skips the chroma planes.
+// NewFrameState allocates a blank 8-bit frame ready for decoding.
+// subX/subY are chroma subsampling factors: 0 = full resolution, 1 =
+// half. monochrome skips the chroma planes.
+//
+// For 10- or 12-bit frames use [NewFrameStateHBD] — it allocates
+// uint16 plane buffers instead of uint8.
 func NewFrameState(w, h int, subX, subY int, monochrome bool) *FrameState {
+	return newFrameStateCommon(w, h, subX, subY, monochrome, 8)
+}
+
+// NewFrameStateHBD allocates a high-bit-depth frame (10 or 12 bit).
+// The Y16 / U16 / V16 planes receive writes; the uint8 planes remain
+// nil. bitDepth must be 8, 10, or 12; other values are clamped to 8.
+func NewFrameStateHBD(w, h, subX, subY int, monochrome bool, bitDepth int) *FrameState {
+	if bitDepth != 8 && bitDepth != 10 && bitDepth != 12 {
+		bitDepth = 8
+	}
+	return newFrameStateCommon(w, h, subX, subY, monochrome, bitDepth)
+}
+
+func newFrameStateCommon(w, h, subX, subY int, monochrome bool, bitDepth int) *FrameState {
 	miC := (w + 3) >> 2
 	miR := (h + 3) >> 2
 	fs := &FrameState{
@@ -59,18 +86,28 @@ func NewFrameState(w, h int, subX, subY int, monochrome bool) *FrameState {
 		MICols:     miC,
 		MIRows:     miR,
 		MI:         make([]ModeInfo, miC*miR),
-		Y:          make([]uint8, w*h),
 		YStride:    w,
 		SubX:       subX,
 		SubY:       subY,
 		Monochrome: monochrome,
+		BitDepth:   bitDepth,
+	}
+	if bitDepth == 8 {
+		fs.Y = make([]uint8, w*h)
+	} else {
+		fs.Y16 = make([]uint16, w*h)
 	}
 	if !monochrome {
 		fs.UVWidth = (w + subX) >> subX
 		fs.UVHeight = (h + subY) >> subY
 		fs.UVStride = fs.UVWidth
-		fs.U = make([]uint8, fs.UVWidth*fs.UVHeight)
-		fs.V = make([]uint8, fs.UVWidth*fs.UVHeight)
+		if bitDepth == 8 {
+			fs.U = make([]uint8, fs.UVWidth*fs.UVHeight)
+			fs.V = make([]uint8, fs.UVWidth*fs.UVHeight)
+		} else {
+			fs.U16 = make([]uint16, fs.UVWidth*fs.UVHeight)
+			fs.V16 = make([]uint16, fs.UVWidth*fs.UVHeight)
+		}
 	}
 	// 64×64 superblock grid (the CDEF signaling grid).
 	fs.SBCols = (w + 63) >> 6
