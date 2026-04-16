@@ -126,8 +126,22 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
 - [x] 10/12-bit plane storage: FrameState gains Y16 / U16 / V16
       uint16 buffers + BitDepth field. NewFrameStateHBD allocates
       uint16 planes; the 8-bit path is unchanged.
+- [x] 10/12-bit CDEF: FilterBlock16 + FindDirection16 + Plane16 +
+      ApplyFrame16 / ApplyFramePerSB16 mirror the uint8 drivers
+      (av1/cdef/filter16.go, direction16.go).
+- [x] 10/12-bit loop restoration: ApplyWiener16 + ApplySGR16 +
+      Plane16 + ApplyFrame16 (av1/lr/wiener16.go, sgr16.go,
+      frame16.go). SGR widens accumulators to int64 and scales p
+      down by 2*(bd-8) so the x/(x+1) LUT index stays 8-bit.
+- [x] 10/12-bit deblocking: Thresholds16 + NarrowMask16 +
+      Filter4_16 + ApplyFrameNarrow16 (av1/loopfilter/narrow16.go,
+      frame16.go). Clip bounds widen with bit depth; +4/+3
+      rounding stays 8-bit per libaom's highbd_filter4.
 - [ ] 10/12-bit decode path: TileDecoder branches on bit-depth to
       pick the right predict / reconstruct / filter variants.
+- [x] 10/12-bit film grain: filmgrain.ApplyWithTemplate16 tiles
+      32×32 patches with bit-depth-aware clipping and restricted-
+      range bounds scaled per bit depth (av1/filmgrain/apply16.go).
 - [ ] 10/12-bit colorspace output: image.YCbCr with 16-bit backing
       buffers + 10/12-bit-aware YUV→RGB matrices.
 
