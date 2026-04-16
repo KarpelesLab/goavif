@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/KarpelesLab/goavif/av1/entropy/cdfs"
+	"github.com/KarpelesLab/goavif/av1/predict"
 	"github.com/KarpelesLab/goavif/av1/quant"
 	"github.com/KarpelesLab/goavif/av1/transform"
 )
@@ -209,16 +210,29 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 
 	// Read UV mode for the chroma planes. CFL is allowed for most block
 	// sizes; when enabled, UV mode can take the CFL_PRED sentinel
-	// (index 13). Our chroma reconstruction currently treats CFL as DC.
+	// (index 13). The sentinel is preserved and consumed by
+	// decodeChromaBlock, which reads alpha signaling and uses the
+	// reconstructed luma instead of predicting chroma independently.
 	var uvMode IntraMode = yMode
+	var cflAlphaU, cflAlphaV int
 	if !fs.Monochrome {
-		cflAllowed := !bs.IsSquare() == false // CFL gates depend on block shape
+		cflAllowed := true
 		m := td.DecodeUVMode(yMode, cflAllowed)
-		if int(m) >= int(IntraModes) {
-			// CFL sentinel — fall back to DC for now.
-			m = DCPred
-		}
 		uvMode = m
+		if m == CFLPred {
+			// CFL mode: read joint sign + per-plane magnitudes.
+			joint := td.ReadCFLSign()
+			su, sv := CFLSigns(joint)
+			magU, magV := 0, 0
+			if su != 0 {
+				magU = td.ReadCFLAlpha(CFLAlphaCtx(joint, 0)) + 1
+			}
+			if sv != 0 {
+				magV = td.ReadCFLAlpha(CFLAlphaCtx(joint, 1)) + 1
+			}
+			cflAlphaU = su * magU
+			cflAlphaV = sv * magV
+		}
 	}
 
 	// Store mode info for every 4×4 MI cell covered by this block.
@@ -286,7 +300,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 
 	// Chroma: predict + (optional) residual per plane.
 	if !fs.Monochrome {
-		if err := td.decodeChromaBlock(fs, uvMode, x, y, bw, bh, skip); err != nil {
+		if err := td.decodeChromaBlock(fs, uvMode, x, y, bw, bh, skip, cflAlphaU, cflAlphaV); err != nil {
 			return err
 		}
 	}
@@ -300,7 +314,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 // For skip blocks the predicted chroma samples are the final output.
 // For non-skip blocks the coefficient decoder runs once per plane (U
 // then V) with the chroma-plane CDFs.
-func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y, bw, bh int, skip bool) error {
+func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y, bw, bh int, skip bool, cflAlphaU, cflAlphaV int) error {
 	cx := x >> fs.SubX
 	cy := y >> fs.SubY
 	cw := bw >> fs.SubX
@@ -350,7 +364,28 @@ func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y,
 		if haveAbove && haveLeft {
 			n.AboveLeft = dst[(cy-1)*fs.UVStride+(cx-1)]
 		}
-		if err := PredictIntra(pred, cw, ch, uvMode, n); err != nil {
+		if uvMode == CFLPred {
+			// CFL: use DC prediction as the chroma DC, then add the
+			// signed-alpha-scaled luma AC to each sample.
+			predict.DCPred(pred, cw, ch, above, left, haveAbove, haveLeft, 8)
+			if bw > 0 && bh > 0 {
+				// Gather the reconstructed luma block covered by this
+				// chroma area and subsample to chroma resolution.
+				lumaBlock := make([]uint8, bw*bh)
+				for r := 0; r < bh && y+r < fs.Height; r++ {
+					for c := 0; c < bw && x+c < fs.Width; c++ {
+						lumaBlock[r*bw+c] = fs.Y[(y+r)*fs.YStride+(x+c)]
+					}
+				}
+				lumaQ3 := make([]int32, cw*ch)
+				predict.CFLSubsample(lumaQ3, lumaBlock, bw, bh, fs.SubX, fs.SubY)
+				alpha := cflAlphaU
+				if plane == 1 {
+					alpha = cflAlphaV
+				}
+				predict.CFLPred(pred, cw, ch, lumaQ3, pred, alpha)
+			}
+		} else if err := PredictIntra(pred, cw, ch, uvMode, n); err != nil {
 			return err
 		}
 

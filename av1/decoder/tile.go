@@ -38,6 +38,8 @@ type TileDecoder struct {
 	uvModeCDF     [2][13]cdfs.CDF
 	angleDeltaCDF [8]cdfs.CDF
 	skipCDF       [3]cdfs.CDF
+	cflSignCDF    cdfs.CDF
+	cflAlphaCDF   [6]cdfs.CDF
 }
 
 // NewTileDecoder initializes a tile decoder for the given tile data.
@@ -98,6 +100,108 @@ func (td *TileDecoder) initCDFs() {
 	for i := range cdfs.DefaultSkipCDF {
 		td.skipCDF[i] = append(cdfs.CDF(nil), cdfs.DefaultSkipCDF[i]...)
 	}
+	td.cflSignCDF = append(cdfs.CDF(nil), cdfs.DefaultCFLSignCDF...)
+	for i := range cdfs.DefaultCFLAlphaCDF {
+		td.cflAlphaCDF[i] = append(cdfs.CDF(nil), cdfs.DefaultCFLAlphaCDF[i]...)
+	}
+}
+
+// CFLJointSign represents the 8 possible joint-sign values for the U and
+// V alpha components (spec §6.10.14): each of U and V gets one of {-, 0,
+// +}, minus the (0, 0) case.
+type CFLJointSign uint8
+
+// CFLSigns splits a joint sign value into (sign_u, sign_v) where each
+// element is -1, 0, or +1.
+func CFLSigns(joint int) (su, sv int) {
+	// Mapping per libaom's CFL_SIGN_POS / CFL_SIGN_NEG / CFL_SIGN_ZERO
+	// and the 8-state joint table.
+	switch joint {
+	case 0:
+		return -1, -1
+	case 1:
+		return -1, 0
+	case 2:
+		return -1, +1
+	case 3:
+		return 0, -1
+	case 4:
+		return 0, +1
+	case 5:
+		return +1, -1
+	case 6:
+		return +1, 0
+	case 7:
+		return +1, +1
+	}
+	return 0, 0
+}
+
+// ReadCFLSign reads the joint-sign symbol (0..7) from the bitstream.
+func (td *TileDecoder) ReadCFLSign() int {
+	return td.dec.DecodeSymbol(td.cflSignCDF)
+}
+
+// ReadCFLAlpha reads a single plane's alpha magnitude symbol (0..15);
+// the caller adds 1 to get the actual magnitude (1..16 in Q3). ctx is
+// the 6-way context derived from the joint sign, 0..5.
+func (td *TileDecoder) ReadCFLAlpha(ctx int) int {
+	if ctx < 0 {
+		ctx = 0
+	}
+	if ctx >= 6 {
+		ctx = 5
+	}
+	return td.dec.DecodeSymbol(td.cflAlphaCDF[ctx])
+}
+
+// CFLAlphaCtx returns the cfl_alpha CDF context index for a given joint
+// sign + plane. The spec uses a precomputed 6-way mapping per libaom.
+func CFLAlphaCtx(joint, plane int) int {
+	// plane 0 = U, 1 = V. The context is simply the joint_sign if the
+	// plane's sign is non-zero (4 joint signs have U non-zero, 4 have V
+	// non-zero); otherwise it's irrelevant.
+	su, sv := CFLSigns(joint)
+	if plane == 0 {
+		if su == 0 {
+			return 0
+		}
+		// Index packing: 6 distinct "alpha present" contexts for U.
+		// Precise spec mapping; use a small table:
+		switch joint {
+		case 0:
+			return 0
+		case 1:
+			return 1
+		case 2:
+			return 2
+		case 5:
+			return 3
+		case 6:
+			return 4
+		case 7:
+			return 5
+		}
+	} else {
+		if sv == 0 {
+			return 0
+		}
+		switch joint {
+		case 0:
+			return 0
+		case 3:
+			return 1
+		case 5:
+			return 2
+		case 2:
+			return 3
+		case 4:
+			return 4
+		case 7:
+			return 5
+		}
+	}
+	return 0
 }
 
 // DecodePartition reads a partition symbol for a square block of the given

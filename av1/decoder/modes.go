@@ -20,6 +20,10 @@ const (
 	SmoothHPred  IntraMode = 11
 	PaethPred    IntraMode = 12
 	IntraModes   = 13
+
+	// CFLPred is the chroma-only sentinel mode (UV plane only). Signaled
+	// as symbol 13 in the uv_mode CDF; never appears in Y.
+	CFLPred IntraMode = 13
 )
 
 // IsDirectional reports whether the mode uses an angle-derivative scan
