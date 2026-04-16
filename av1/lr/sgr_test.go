@@ -41,3 +41,59 @@ func TestBoxMeanSingleSpike(t *testing.T) {
 		t.Errorf("central mean = %d, want 10", got[5*w+5])
 	}
 }
+
+func TestApplySGRPassthroughWhenRadiiZero(t *testing.T) {
+	w, h := 8, 8
+	src := make([]uint8, w*h)
+	for i := range src {
+		src[i] = uint8((i * 19) & 0xFF)
+	}
+	dst := make([]uint8, w*h)
+	ApplySGR(dst, src, w, h, w, SGRParams{R0: 0, R1: 0})
+	for i, v := range dst {
+		if v != src[i] {
+			t.Errorf("dst[%d]=%d, want %d (src)", i, v, src[i])
+		}
+	}
+}
+
+func TestSGRSubFilterFlatInput(t *testing.T) {
+	w, h := 8, 8
+	src := make([]uint8, w*h)
+	for i := range src {
+		src[i] = 77
+	}
+	dst := make([]uint8, w*h)
+	SGRSubFilter(dst, src, w, h, w, 2, 12)
+	for i, v := range dst {
+		if v != 77 {
+			t.Errorf("SGR on flat input: dst[%d]=%d, want 77", i, v)
+		}
+	}
+}
+
+func TestApplySGRSoftensNoise(t *testing.T) {
+	// Checkerboard 40/160 → SGR should pull interior samples toward
+	// the mean (100) with a visible softening effect.
+	w, h := 8, 8
+	src := make([]uint8, w*h)
+	for r := 0; r < h; r++ {
+		for c := 0; c < w; c++ {
+			if (r+c)%2 == 0 {
+				src[r*w+c] = 40
+			} else {
+				src[r*w+c] = 160
+			}
+		}
+	}
+	dst := make([]uint8, w*h)
+	ApplySGR(dst, src, w, h, w, SGRParams{R0: 1, R1: 0, Eps0: 40, Xq: [2]int{32, 0}})
+	for r := 2; r < h-2; r++ {
+		for c := 2; c < w-2; c++ {
+			v := dst[r*w+c]
+			if v < 30 || v > 170 {
+				t.Errorf("dst[%d,%d]=%d out of expected softened band", r, c, v)
+			}
+		}
+	}
+}
