@@ -20,28 +20,49 @@ type ModeInfo struct {
 // processes each superblock. It holds the mode-info grid and the
 // reconstructed pixel planes.
 type FrameState struct {
-	Width    int
-	Height   int
-	MICols   int
-	MIRows   int
-	MI       []ModeInfo // MICols × MIRows
-	Y        []uint8    // luma plane, Width × Height
-	YStride  int
+	Width   int
+	Height  int
+	MICols  int
+	MIRows  int
+	MI      []ModeInfo // MICols × MIRows
+
+	Y       []uint8 // luma plane, Width × Height
+	YStride int
+
+	// U / V chroma planes. Dimensions are Width>>SubX × Height>>SubY.
+	U, V             []uint8
+	UVWidth, UVHeight int
+	UVStride         int
+	SubX, SubY       int // chroma subsampling factors (0 or 1 each)
+	Monochrome       bool
 }
 
-// NewFrameState allocates a blank frame ready for decoding.
-func NewFrameState(w, h int) *FrameState {
+// NewFrameState allocates a blank frame ready for decoding. subX/subY are
+// chroma subsampling factors: 0 = full resolution, 1 = half. monochrome
+// skips the chroma planes.
+func NewFrameState(w, h int, subX, subY int, monochrome bool) *FrameState {
 	miC := (w + 3) >> 2
 	miR := (h + 3) >> 2
-	return &FrameState{
-		Width:   w,
-		Height:  h,
-		MICols:  miC,
-		MIRows:  miR,
-		MI:      make([]ModeInfo, miC*miR),
-		Y:       make([]uint8, w*h),
-		YStride: w,
+	fs := &FrameState{
+		Width:      w,
+		Height:     h,
+		MICols:     miC,
+		MIRows:     miR,
+		MI:         make([]ModeInfo, miC*miR),
+		Y:          make([]uint8, w*h),
+		YStride:    w,
+		SubX:       subX,
+		SubY:       subY,
+		Monochrome: monochrome,
 	}
+	if !monochrome {
+		fs.UVWidth = (w + subX) >> subX
+		fs.UVHeight = (h + subY) >> subY
+		fs.UVStride = fs.UVWidth
+		fs.U = make([]uint8, fs.UVWidth*fs.UVHeight)
+		fs.V = make([]uint8, fs.UVWidth*fs.UVHeight)
+	}
+	return fs
 }
 
 // GetMI returns a pointer to the ModeInfo at (miCol, miRow). Bounds are
@@ -186,6 +207,20 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 	yMode := td.DecodeIntraYMode(modeCtxBucket(aboveMode), modeCtxBucket(leftMode))
 	skip := td.DecodeSkip(0)
 
+	// Read UV mode for the chroma planes. CFL is allowed for most block
+	// sizes; when enabled, UV mode can take the CFL_PRED sentinel
+	// (index 13). Our chroma reconstruction currently treats CFL as DC.
+	var uvMode IntraMode = yMode
+	if !fs.Monochrome {
+		cflAllowed := !bs.IsSquare() == false // CFL gates depend on block shape
+		m := td.DecodeUVMode(yMode, cflAllowed)
+		if int(m) >= int(IntraModes) {
+			// CFL sentinel — fall back to DC for now.
+			m = DCPred
+		}
+		uvMode = m
+	}
+
 	// Store mode info for every 4×4 MI cell covered by this block.
 	miW := (w + 3) >> 2
 	miH := (h + 3) >> 2
@@ -193,6 +228,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 		for mc := 0; mc < miW && miCol+mc < fs.MICols; mc++ {
 			mi := fs.GetMI(miCol+mc, miRow+mr)
 			mi.Mode = yMode
+			mi.UVMode = uvMode
 			mi.Skip = skip
 		}
 	}
@@ -238,19 +274,175 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 	}
 
 	if skip {
-		// Zero residual — predicted samples are the final output.
+		// Zero residual — predicted samples are the final output for Y.
 		for r := 0; r < bh; r++ {
 			for c := 0; c < bw; c++ {
 				fs.Y[(y+r)*fs.YStride+(x+c)] = pred[r*bw+c]
 			}
 		}
+	} else if err := td.reconstructResidual(fs, pred, x, y, bw, bh); err != nil {
+		return err
+	}
+
+	// Chroma: predict + (optional) residual per plane.
+	if !fs.Monochrome {
+		if err := td.decodeChromaBlock(fs, uvMode, x, y, bw, bh, skip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// decodeChromaBlock predicts and reconstructs the U and V samples
+// corresponding to the luma block at (x, y, bw×bh). Chroma dimensions are
+// divided by fs.SubX / fs.SubY.
+//
+// For skip blocks the predicted chroma samples are the final output.
+// For non-skip blocks the coefficient decoder runs once per plane (U
+// then V) with the chroma-plane CDFs.
+func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y, bw, bh int, skip bool) error {
+	cx := x >> fs.SubX
+	cy := y >> fs.SubY
+	cw := bw >> fs.SubX
+	ch := bh >> fs.SubY
+	if cw < 1 {
+		cw = 1
+	}
+	if ch < 1 {
+		ch = 1
+	}
+	if cx+cw > fs.UVWidth {
+		cw = fs.UVWidth - cx
+	}
+	if cy+ch > fs.UVHeight {
+		ch = fs.UVHeight - cy
+	}
+	if cw <= 0 || ch <= 0 {
 		return nil
 	}
 
-	// Non-skip: read coefficients + dequant + inverse transform, then
-	// add to the prediction. Currently limited to 4×4/8×8 TX blocks.
-	if err := td.reconstructResidual(fs, pred, x, y, bw, bh); err != nil {
+	for plane := 0; plane < 2; plane++ {
+		dst := fs.U
+		if plane == 1 {
+			dst = fs.V
+		}
+		haveAbove := cy > 0
+		haveLeft := cx > 0
+
+		above := make([]uint8, cw)
+		left := make([]uint8, ch)
+		if haveAbove {
+			for c := 0; c < cw; c++ {
+				above[c] = dst[(cy-1)*fs.UVStride+(cx+c)]
+			}
+		}
+		if haveLeft {
+			for r := 0; r < ch; r++ {
+				left[r] = dst[(cy+r)*fs.UVStride+(cx-1)]
+			}
+		}
+		pred := make([]uint8, cw*ch)
+		n := &Neighbors{
+			Above: above, Left: left,
+			HaveAbove: haveAbove, HaveLeft: haveLeft,
+			BitDepth: 8,
+		}
+		if haveAbove && haveLeft {
+			n.AboveLeft = dst[(cy-1)*fs.UVStride+(cx-1)]
+		}
+		if err := PredictIntra(pred, cw, ch, uvMode, n); err != nil {
+			return err
+		}
+
+		if skip {
+			for r := 0; r < ch; r++ {
+				for c := 0; c < cw; c++ {
+					dst[(cy+r)*fs.UVStride+(cx+c)] = pred[r*cw+c]
+				}
+			}
+			continue
+		}
+		// Non-skip chroma: read residual and add to prediction.
+		if err := td.reconstructChromaResidual(dst, pred, cx, cy, cw, ch, plane,
+			int(td.fh.Quant.DeltaQUDc), int(td.fh.Quant.DeltaQUAc),
+			int(td.fh.Quant.DeltaQVDc), int(td.fh.Quant.DeltaQVAc),
+			fs.UVStride); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reconstructChromaResidual mirrors reconstructResidual for a chroma plane:
+// it reads the chroma coefficient block, dequantizes with the U or V
+// delta values, inverse-transforms, and adds to the prediction.
+func (td *TileDecoder) reconstructChromaResidual(
+	dst []uint8, pred []uint8,
+	cx, cy, cw, ch int,
+	plane int,
+	duDC, duAC, dvDC, dvAC int,
+	stride int,
+) error {
+	if td.coeff == nil {
+		return fmt.Errorf("%w: coeff decoder not initialized", ErrCoeffDecodeUnimplemented)
+	}
+	var txSizeIdx int
+	var nzMap []int8
+	var scan []int
+	switch {
+	case cw == 4 && ch == 4:
+		txSizeIdx = 0
+		nzMap = cdfs.NzMapCtxOffset4x4[:]
+		scan = transform.DefaultZigzagScan(4, 4)
+	case cw == 8 && ch == 8:
+		txSizeIdx = 1
+		nzMap = cdfs.NzMapCtxOffset8x8[:]
+		scan = transform.DefaultZigzagScan(8, 8)
+	default:
+		return fmt.Errorf("%w: chroma residual 4×4 or 8×8 only",
+			ErrCoeffDecodeUnimplemented)
+	}
+
+	numCoeffs := cw * ch
+	coeffs, err := td.coeff.ReadCoefficients(txSizeIdx, 1 /*chroma*/, numCoeffs, scan, nzMap, cw, ch)
+	if err != nil {
 		return err
+	}
+
+	qParams := quant.Params{
+		BaseQIndex: int(td.fh.Quant.BaseQIndex),
+		DeltaQUDc:  duDC,
+		DeltaQUAc:  duAC,
+		DeltaQVDc:  dvDC,
+		DeltaQVAc:  dvAC,
+		BitDepth:   int(td.sh.Color.BitDepth),
+	}
+	pl := quant.PlaneU
+	if plane == 1 {
+		pl = quant.PlaneV
+	}
+	qv := qParams.Compute(pl)
+	for i := range coeffs {
+		coeffs[i] = DequantCoeff(coeffs[i], i, qv)
+	}
+
+	var txSize transform.TxSize
+	switch txSizeIdx {
+	case 0:
+		txSize = transform.Tx4x4
+	case 1:
+		txSize = transform.Tx8x8
+	}
+	if err := transform.Inverse2D(coeffs, transform.DctDct, txSize); err != nil {
+		return err
+	}
+
+	out := make([]uint8, cw*ch)
+	ReconstructBlock(out, pred, coeffs, cw, ch)
+	for r := 0; r < ch; r++ {
+		for c := 0; c < cw; c++ {
+			dst[(cy+r)*stride+(cx+c)] = out[r*cw+c]
+		}
 	}
 	return nil
 }

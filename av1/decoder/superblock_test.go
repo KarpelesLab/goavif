@@ -17,7 +17,7 @@ func TestDecodeSuperblockSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTileDecoder: %v", err)
 	}
-	fs := NewFrameState(64, 48)
+	fs := NewFrameState(64, 48, 1, 1, false)
 
 	err = td.DecodeSuperblock(fs, 0, 0)
 	// The most likely outcome is ErrCoeffDecodeUnimplemented — the
@@ -29,7 +29,7 @@ func TestDecodeSuperblockSmoke(t *testing.T) {
 }
 
 func TestNewFrameState(t *testing.T) {
-	fs := NewFrameState(64, 48)
+	fs := NewFrameState(64, 48, 1, 1, false)
 	if fs.MICols != 16 || fs.MIRows != 12 {
 		t.Errorf("MI dims: %dx%d want 16x12", fs.MICols, fs.MIRows)
 	}
