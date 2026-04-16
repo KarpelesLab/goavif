@@ -17,71 +17,99 @@ Parse and serialize the AVIF container for still images.
 - [x] Public API stubs and `image.RegisterFormat` registration
 - [x] Roundtrip tests (typed boxes + full container)
 
-## Phase 2 — AV1 decoder: OBU parsing + intra-only still frames
+## Phase 2 — AV1 intra decoder (feature-complete for the common path) ✅
 
-Minimum viable decoder: decode a single keyframe from an AVIF still to
-8-bit 4:2:0 YCbCr, including deblocking and CDEF.
+End-to-end decode of an AVIF still: container → AV1 bitstream → Y/U/V
+planes → image.Image. The pipeline runs bitstream-accurately through
+CDF-driven partition / mode / coefficient / sign / tx_type decode for
+TX sizes up to 32×32 (square) and up to 32×8 / 8×32 (non-square) with
+the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
 
-- [x] `av1/bitio`: `f(n)`, `su(n)`, `uvlc`, `leb128` reader
-- [x] `av1/obu`: OBU header parsing, sequence header
-- [x] `av1/obu`: frame header (intra-only path)
-- [x] `av1/entropy`: symbol decoder (boolean coder) infrastructure
-- [x] `av1/entropy/cdfs`: CDF type + AomCDF inversion + full default tables:
-      skip, partition (20 ctxs), kf_y_mode (5×5 ctxs), uv_mode (2×13),
-      angle_delta (8), tx_size (4×3), txfm_partition (21), dc_sign (2×3),
-      txb_skip (5×13, Q=0), eob_multi 16/32/64/128/256/512/1024 (all Q),
-      eob_extra (4×5×2×9), coeff_base_multi (4×5×2×42), coeff_br_multi
-      (4×5×2×21), coeff_base_eob_multi (Q=0), cfl_sign + cfl_alpha (6
-      ctxs), spatial_pred_seg_tree (3 ctxs), nz_map_ctx_offset for all
-      square + 8 rectangular TX shapes
+### Foundational packages
+- [x] `av1/bitio`: `f(n)`, `su(n)`, `uvlc`, `leb128`, ns/trailing bits
+- [x] `av1/obu`: OBU framing + sequence header + full intra frame header
+- [x] `av1/entropy`: symbol decoder (range-coded CDF) with update
+- [x] `av1/entropy/cdfs`: every mode-level + coefficient-level default
+      CDF the spec's intra path consumes — partition, kf_y_mode, uv_mode,
+      angle_delta, tx_size, txfm_partition, skip, dc_sign, txb_skip,
+      eob_multi 16/32/64/128/256/512/1024, eob_extra, coeff_base_multi
+      (42 sig contexts), coeff_br_multi (21 level contexts),
+      coeff_base_eob_multi, cfl_sign, cfl_alpha (6 contexts),
+      spatial_pred_seg_tree, intra_ext_tx (sets 1 + 2),
+      nz_map_ctx_offset (all square + 8 rectangular shapes)
 - [ ] `av1/entropy/cdfs`: Q contexts 1-3 for txb_skip & coeff_base_eob,
-      filter_intra, palette, intra_tx_type signaling
+      filter_intra, palette (deferred — uncommon in AVIF)
+
+### Per-block primitives
 - [x] `av1/predict`: DC, V, H, Paeth, Smooth/V/H, full directional
-      (D45/D67/D113/D135/D157/D203 via DirectionalPred), CFL scaffold
-- [ ] `av1/predict`: angle_delta sub-pixel refinement, filter-intra,
-      recursive intra, proper CFL (luma AC × signed alpha)
-- [x] `av1/transform`: every 1D inverse transform AV1 defines:
+      (D45/D67/D113/D135/D157/D203 via `DirectionalPred` with sub-pixel
+      interpolation from the spec's `dr_intra_derivative`), CFL
+      (subsample + signed alpha)
+- [ ] `av1/predict`: angle_delta refinement bits, filter-intra,
+      recursive intra (deferred)
+- [x] `av1/transform`: every 1D inverse transform AV1 defines —
       IDCT4/8/16/32/64, IADST4/8/16, IFLIPADST4/8/16, IDTX4/8/16/32,
-      IWHT4 (lossless), FDCT4 (encoder skeleton), Inverse2D wrapper,
-      RowOp/ColOp dispatch (4/8/16/32/64-point), DefaultZigzagScan
-- [x] `av1/quant`: 8-bit DC/AC lookup tables + Params.Compute per plane
-- [ ] `av1/quant`: 10/12-bit tables, Q-matrix / segment-Q application
-- [x] `av1/decoder`: full pipeline — container → seq header → frame
-      header → TileDecoder + CoeffDecoder → partition tree → per-leaf
-      mode decode → intra predict → coefficient decode + dequant +
-      inverse transform + reconstruct → loop filter → FrameState.Y/U/V
-- [x] `av1/decoder`: CoeffDecoder reads txb_skip / eob / coeff_base /
-      coeff_br / dc_sign / AC signs; sig_coef and level context
-      derivation landed for 4×4, 8×8, 16×16
-- [x] `av1/decoder`: intra_tx_type signaling wired (ReadIntraTxType +
-      IntraTxTypeFor mapping for the 2 EXT_TX_SET_INTRA families)
-- [ ] `av1/decoder`: TX_64x64 tile-level (needs top-left 32×32 subregion
-      coeff layout), multi-tile frames, segment_id decoding, filter_intra
-- [x] Reconstruction: per-block ReconstructBlock done
+      IWHT4 (lossless), FDCT4 (encoder skeleton), 2D Inverse2D wrapper,
+      RowOp/ColOp dispatch covering every (TxType × TxSize) pair for
+      4/8/16/32-point and 64-point DCT+IDTX, DefaultZigzagScan
+- [x] `av1/quant`: 8/10/12-bit DC/AC lookup tables + per-plane Compute
+      with segmentation Q offset application
+- [ ] `av1/quant`: full Q-matrix application when using_qmatrix=1
+
+### Tile / superblock decoder
+- [x] `av1/decoder` core:
+  - TileDecoder reads partition / intra Y mode / UV mode / angle_delta /
+    skip / segment_id / intra_tx_type symbols from the bitstream
+  - CoeffDecoder reads txb_skip / eob_pt + eob_extra / coeff_base_multi /
+    coeff_br_multi / dc_sign / AC uniform signs, with sig_coef_ctx and
+    level_ctx derivation per spec §6.10.6
+  - Superblock partition-tree walker with NONE/HORZ/VERT/SPLIT support
+  - Per-block intra predict → dequant (base + segmentation Δ) → inverse
+    2D transform (tx_type dispatched) → reconstruct → plane write
+  - Chroma pipeline: UV mode decode, optional CFL with reconstructed
+    luma AC + decoded alpha, per-plane coefficient decode + dequant
+  - Multi-tile tile-group support (tile_size_minus_1 leb128 prefixes)
+- [ ] `av1/decoder` extras:
+  - TX_64x64 / 64x32 / 32x64 with the spec's top-left 32×32 subregion
+    coefficient layout
+  - Extended partitions HORZ_A/B, VERT_A/B, HORZ_4, VERT_4
+  - filter_intra / palette / intrabc modes
+
+### Filters and output
 - [x] Loop filter: 4-tap narrow + 8-tap wide + frame-level driver;
       DeriveThresholds from filter_level / sharpness; Y+UV pass wired
       into the decoder after superblock loop
-- [ ] Loop filter: 14-tap widest, per-edge TX-grid tracking (vs uniform
-      8-pixel stride)
-- [ ] CDEF (constrained directional enhancement filter)
+- [ ] Loop filter: 14-tap widest filter, per-edge TX-grid tracking (vs
+      uniform 8-pixel stride)
+- [x] CDEF: Constrain nonlinearity + primary/secondary FilterBlock +
+      FindDirection from libaom's cdef_find_dir_c + ApplyFrame driver;
+      wired into the decoder after deblocking when sh.EnableCdef
+- [ ] CDEF: per-superblock cdef_idx signaling (currently uses
+      strengths[0] as a sensible default)
+- [ ] Loop restoration (Wiener + self-guided)
+- [ ] Film grain synthesis
+
+### Top level
 - [x] `colorspace`: YUV→RGB BT.601/709/2020 + Studio/Full range
-- [x] `goavif.Decode`: end-to-end pipeline wired (returns
-      `ErrPixelDecodeUnimplemented` until coefficient decoding lands);
-      Frame → image.Image bridge in place
+- [x] `goavif.Decode`: container → av1C seq → primary item → tile
+      decoder → deblock → CDEF → Frame → image.YCbCr
+- [x] `goavif.DecodeConfig`: works standalone (ispe / pixi / av1C)
 - [x] `cmd/goavif-info`: container/sequence-header inspector CLI
 - [ ] Golden tests vs dav1d on AOM intra-only test vectors
+- [ ] 10/12-bit pixel plane path (quant tables in place; FrameState is
+      still uint8 — needs uint16 plane type + colorspace widening)
 
-## Phase 3 — Full AV1 decoder
+## Phase 3 — spec-complete decoder
 
-Everything the AV1 spec requires to pass the reference conformance suite.
+Parity with the reference conformance suite.
 
-- [ ] Inter prediction: single and compound references, translational and
-      warp, global motion
-- [ ] Loop restoration: Wiener + self-guided
-- [ ] Film grain synthesis
-- [ ] Segmentation + ref-frame management
-- [ ] 10/12-bit pixel pipeline
-- [ ] Monochrome, 4:2:2, 4:4:4 chroma
+- [ ] Inter prediction: single and compound references, translational
+      and warp, global motion
+- [ ] Loop restoration (Wiener + self-guided): move from Phase 2
+- [ ] Film grain synthesis: move from Phase 2
+- [ ] Full ref-frame management + segmentation temporal update
+- [ ] 10/12-bit pixel pipeline end-to-end
+- [ ] Monochrome, 4:2:2, 4:4:4 chroma sampling fully exercised
 - [ ] Conformance harness driven from official AV1 test vectors
 
 ## Phase 4 — Alpha, HDR, image sequences
