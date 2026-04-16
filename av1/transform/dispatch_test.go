@@ -74,8 +74,11 @@ func TestDctDct32x32Dispatches(t *testing.T) {
 	}
 }
 
-func TestUnsupported64x64ReturnsNil(t *testing.T) {
-	if RowOp(DctDct, Tx64x64) != nil {
-		t.Errorf("RowOp(DctDct, 64x64) should be nil until IDCT64 lands")
+func TestDctDct64x64Dispatches(t *testing.T) {
+	if RowOp(DctDct, Tx64x64) == nil {
+		t.Errorf("RowOp(DctDct, 64x64) should now dispatch to IDCT64")
+	}
+	if ColOp(DctDct, Tx64x64) == nil {
+		t.Errorf("ColOp(DctDct, 64x64) = nil")
 	}
 }

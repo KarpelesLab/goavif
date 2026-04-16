@@ -100,6 +100,10 @@ func RowOp(ty TxType, sz TxSize) Dim1D {
 		case kindIDTX:
 			return IDTX32
 		}
+	case 64:
+		if rowKind(ty) == kindDCT {
+			return IDCT64
+		}
 	}
 	return nil
 }
@@ -139,6 +143,10 @@ func ColOp(ty TxType, sz TxSize) Dim1D {
 			return IDCT32
 		case kindIDTX:
 			return IDTX32
+		}
+	case 64:
+		if colKind(ty) == kindDCT {
+			return IDCT64
 		}
 	}
 	return nil

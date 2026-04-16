@@ -52,10 +52,18 @@ func TestInverse2D32x32DcBlock(t *testing.T) {
 	}
 }
 
-func TestInverse2DUnsupported64(t *testing.T) {
+func TestInverse2D64x64DcBlock(t *testing.T) {
 	coeffs := make([]int32, 4096)
-	if err := Inverse2D(coeffs, DctDct, Tx64x64); err == nil {
-		t.Errorf("expected error for 64x64 (IDCT64 not implemented)")
+	coeffs[0] = 32768
+	if err := Inverse2D(coeffs, DctDct, Tx64x64); err != nil {
+		t.Fatalf("Inverse2D 64x64: %v", err)
+	}
+	first := coeffs[0]
+	for i, v := range coeffs {
+		if v != first {
+			t.Errorf("non-constant at %d: %d != %d", i, v, first)
+			break
+		}
 	}
 }
 

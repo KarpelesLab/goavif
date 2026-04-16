@@ -503,6 +503,10 @@ func selectTxParams(w, h int) (txSizeIdx int, nzMap []int8, scan []int, txSize t
 		return 2, cdfs.NzMapCtxOffset16x16[:], transform.DefaultZigzagScan(16, 16), transform.Tx16x16, nil
 	case w == 32 && h == 32:
 		return 3, cdfs.NzMapCtxOffset32x32[:], transform.DefaultZigzagScan(32, 32), transform.Tx32x32, nil
+	// TX_64x64 / 64x32 / 32x64 need a 32x32-subregion coefficient layout
+	// per spec §7.7.3 (high-frequency coefficients are forced zero).
+	// That layout is different enough that it's a separate pass — left
+	// unhandled here for now.
 
 	// Rectangular TX sizes.
 	case w == 4 && h == 8:
