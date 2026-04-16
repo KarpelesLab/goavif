@@ -85,6 +85,21 @@ func Decode(r io.Reader) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
+
+	// Alpha auxiliary: if the container signals an alpha item via auxl
+	// iref + auxC alpha URN, decode it and composite into NRGBA /
+	// NRGBA64. No alpha channel → passthrough.
+	if alphaID := findAlphaItemID(ct, primaryID); alphaID != 0 {
+		alpha, err := decodeAlphaFrame(ct, alphaID)
+		if err != nil {
+			return nil, fmt.Errorf("goavif: alpha decode: %w", err)
+		}
+		if frame.BitDepth > 8 {
+			return compositeNRGBA64(frame, alpha)
+		}
+		return compositeNRGBA(frame, alpha)
+	}
+
 	return frameToImage(frame)
 }
 

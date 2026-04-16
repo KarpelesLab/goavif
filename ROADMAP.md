@@ -176,8 +176,16 @@ Parity with the reference conformance suite.
 
 ## Phase 4 — Alpha, HDR, image sequences
 
-- [ ] Alpha: decode auxiliary AV1 stream, composite into `NRGBA`/`NRGBA64`
-- [ ] HDR: surface CICP / transfer / matrix / range; honor 10/12-bit output
+- [x] Alpha: findAlphaItemID resolves auxl iref + auxC alpha URN,
+      decodeAlphaFrame runs the aux AV1 stream through the existing
+      intra-only path, compositeNRGBA / compositeNRGBA64 splice the
+      alpha plane into image.NRGBA or image.NRGBA64 output. Decode
+      detects the alpha item automatically.
+- [x] HDR: CICP matrix + color range honored in the YUV→RGB matrix
+      selection (frameToImage16 + composite helpers). 10/12-bit
+      output lands as image.RGBA64 / image.NRGBA64. Transfer
+      function passthrough is bitstream-level (decoder produces
+      linear-relative YUV regardless of signaled transfer).
 - [ ] Image sequences: parse `moov`/`trak`/`stbl` and expose per-frame timing
 - [ ] `goavif.DecodeAll` public API
 
