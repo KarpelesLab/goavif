@@ -133,6 +133,29 @@ func TestEncodeQualityAffectsBaseQIndex(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeNonBlackImage(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	// Fill with bright red.
+	for i := 0; i < len(src.Pix); i += 4 {
+		src.Pix[i+0] = 255 // R
+		src.Pix[i+1] = 0   // G
+		src.Pix[i+2] = 0   // B
+		src.Pix[i+3] = 255 // A
+	}
+	var buf bytes.Buffer
+	if err := Encode(&buf, src, &Options{Quality: 50}); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	img, err := Decode(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if img.Bounds().Dx() != 64 || img.Bounds().Dy() != 64 {
+		t.Fatalf("decoded size %v, want 64x64", img.Bounds())
+	}
+	t.Logf("encoded size: %d bytes", buf.Len())
+}
+
 func dimName(n int) string {
 	return "x" + itoa(n)
 }

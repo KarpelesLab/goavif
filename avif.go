@@ -238,6 +238,27 @@ func extractSequenceHeader(ct *isobmff.Container, itemID uint32) (*obu.SequenceH
 	return nil, fmt.Errorf("goavif: av1C has no sequence header OBU")
 }
 
+// imageToLumaY extracts a BT.601-weighted luma plane from an
+// arbitrary image.Image. Output is a width*height uint8 slice in
+// row-major order.
+func imageToLumaY(m image.Image) []uint8 {
+	bounds := m.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	y := make([]uint8, w*h)
+	for r := 0; r < h; r++ {
+		for c := 0; c < w; c++ {
+			rr, gg, bb, _ := m.At(bounds.Min.X+c, bounds.Min.Y+r).RGBA()
+			// BT.601 luma: Y = 0.299R + 0.587G + 0.114B (>>8 to go from 16-bit to 8-bit)
+			luma := (19595*rr + 38470*gg + 7471*bb + (1 << 23)) >> 24
+			if luma > 255 {
+				luma = 255
+			}
+			y[r*w+c] = uint8(luma)
+		}
+	}
+	return y
+}
+
 // findIprp returns the iprp box from a parsed Container, or nil.
 func findIprp(ct *isobmff.Container) *isobmff.Iprp {
 	if ct.Meta == nil {
@@ -313,7 +334,9 @@ func Encode(w io.Writer, m image.Image, opts *Options) error {
 	if err != nil {
 		return err
 	}
-	tilePayload, err := encoder.WriteIntraOnlyTile(width, height, fh, sh)
+	// Convert input image to luma (Y) plane for the encoder.
+	lumaY := imageToLumaY(m)
+	tilePayload, err := encoder.WriteIntraOnlyTile(width, height, fh, sh, lumaY)
 	if err != nil {
 		return err
 	}
