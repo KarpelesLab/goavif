@@ -107,6 +107,34 @@ func TestDefaultTxfmPartitionCDFValidate(t *testing.T) {
 	}
 }
 
+func TestDefaultCoeffBaseMultiCDFValidate(t *testing.T) {
+	for q := 0; q < 4; q++ {
+		for tx := 0; tx < 5; tx++ {
+			for p := 0; p < 2; p++ {
+				for c := 0; c < 42; c++ {
+					if err := DefaultCoeffBaseMultiCDF[q][tx][p][c].Validate(); err != nil {
+						t.Errorf("CoeffBaseMulti[%d][%d][%d][%d]: %v", q, tx, p, c, err)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestDefaultCoeffBrMultiCDFValidate(t *testing.T) {
+	for q := 0; q < 4; q++ {
+		for tx := 0; tx < 5; tx++ {
+			for p := 0; p < 2; p++ {
+				for c := 0; c < 21; c++ {
+					if err := DefaultCoeffBrMultiCDF[q][tx][p][c].Validate(); err != nil {
+						t.Errorf("CoeffBrMulti[%d][%d][%d][%d]: %v", q, tx, p, c, err)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestAomCDFInversion(t *testing.T) {
 	c := AomCDF(19132, 25510, 30392)
 	// Stored values should be 32768 - raw.
