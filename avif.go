@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/KarpelesLab/goavif/av1/decoder"
+	"github.com/KarpelesLab/goavif/av1/encoder"
 	"github.com/KarpelesLab/goavif/av1/obu"
 	"github.com/KarpelesLab/goavif/colorspace"
 	"github.com/KarpelesLab/goavif/isobmff"
@@ -283,13 +284,67 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 // Encode writes m to w as an AVIF image using opts. Not implemented yet;
 // returns [ErrUnsupported].
 func Encode(w io.Writer, m image.Image, opts *Options) error {
-	// Phase 5 is in progress. The building blocks (forward transforms,
-	// forward quantizer, OBU writer / bitio writer, entropy encoder
-	// skeleton) are landed but the full encode pipeline — tile
-	// bitstream emission via the range coder, coefficient write path,
-	// mode decision + RDO, and container assembly — is not yet wired
-	// end-to-end. Calling this function returns ErrUnsupported.
-	return fmt.Errorf("%w: AV1 encoder pending (Phase 5 partial — transforms/quant/OBU writer ready, range coder + tile bitstream not yet)", ErrUnsupported)
+	if m == nil {
+		return fmt.Errorf("goavif: nil image")
+	}
+	bounds := m.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width < 4 || height < 4 {
+		return fmt.Errorf("goavif: image too small (%dx%d)", width, height)
+	}
+
+	// Build the three AV1 OBUs: sequence header, frame header,
+	// tile group. Current encoder is first-pass: PARTITION_NONE +
+	// DC_PRED + skip=1 everywhere, so no residual is coded and
+	// the decoder produces a constant-chroma mid-grey image.
+	baseQ := uint8(32)
+	if opts != nil && opts.Quality > 0 && opts.Quality <= 100 {
+		// Map quality 0..100 to baseQ 255..0 roughly (not tuned).
+		baseQ = uint8(255 - (opts.Quality*255)/100)
+	}
+
+	seqPayload := obu.WriteSequenceHeader(width, height)
+	framePayload := obu.WriteKeyFrameHeader(width, height, baseQ)
+	sh, err := obu.ParseSequenceHeader(seqPayload)
+	if err != nil {
+		return err
+	}
+	fh, _, err := obu.ParseFrameHeaderBytes(framePayload, sh, nil)
+	if err != nil {
+		return err
+	}
+	tilePayload, err := encoder.WriteIntraOnlyTile(width, height, fh, sh)
+	if err != nil {
+		return err
+	}
+
+	// Assemble AV1 bitstream: seq OBU + frame OBU.
+	// Concat frame header and tile payload inside one FRAME OBU.
+	seqOBU := obu.WrapOBU(1 /* OBU_SEQUENCE_HEADER */, seqPayload)
+	frameBytes := append(append([]byte(nil), framePayload...), tilePayload...)
+	frameOBU := obu.WrapOBU(6 /* OBU_FRAME */, frameBytes)
+
+	// Wrap in ISOBMFF/AVIF container using BuildStillImage.
+	container, err := isobmff.BuildStillImage(isobmff.StillImage{
+		Width:              uint32(width),
+		Height:             uint32(height),
+		BitDepth:           sh.Color.BitDepth,
+		Monochrome:         sh.Color.Monochrome,
+		ChromaSubsamplingX: sh.Color.SubsamplingX,
+		ChromaSubsamplingY: sh.Color.SubsamplingY,
+		ConfigOBUs:         seqOBU,
+		AV1Bitstream:       frameOBU,
+	})
+	if err != nil {
+		return fmt.Errorf("goavif: build container: %w", err)
+	}
+	var outBuf []byte
+	outBuf, err = container.Encode()
+	if err != nil {
+		return fmt.Errorf("goavif: encode container: %w", err)
+	}
+	_, err = w.Write(outBuf)
+	return err
 }
 
 // primaryDims returns the width, height, bit depth per component, and channel
