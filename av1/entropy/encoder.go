@@ -1,121 +1,103 @@
 package entropy
 
-// Encoder is the forward counterpart of [Decoder]. It implements the
-// AV1-flavored range encoder: bits in, bytes out. The byte stream
-// produced is self-consistent with goavif's [Decoder] and exercises
-// the same CDF tables; it is NOT yet bit-exact with libaom's
-// reference encoder. Producing dav1d-decodable output requires
-// the bit-exact variant, which is a follow-up.
-//
-// Internally the encoder carries a 32-bit "low" register and a
-// 16-bit rng, doubling both during renormalization and emitting
-// bits as they fall out the top of the window. Deferred-carry
-// handling is folded into the renormalize loop: each pending
-// 0xFF byte is held back until a non-0xFF byte emerges or a
-// carry arrives.
-type Encoder struct {
-	low     uint32
-	rng     uint32
-	nbits   int // bits shifted out of low waiting to be packed
-	bitAcc  uint8
-	bitCnt  int
-	buf     []byte
-	pending int // count of deferred 0xFF bytes
+import (
+	"math/big"
 
+	"github.com/KarpelesLab/goavif/av1/bitio"
+)
+
+// Encoder is the forward counterpart of [Decoder]. It implements a
+// deferred-emission range encoder: all narrowing operations update
+// the internal big-integer state, and bits are emitted only at
+// [Encoder.Finish]. This avoids the carry-propagation complexity of
+// a streaming range encoder at the cost of holding the running low
+// value until finish; memory use is O(total bits encoded).
+//
+// The emitted bytes are bit-exact with goavif's [Decoder]: running
+// Encoder.Init, some EncodeBool / EncodeSymbol / EncodeLiteral
+// sequence, then Finish produces a byte stream that Decoder.Init
+// plus the same sequence of DecodeBool / DecodeSymbol / ReadLiteral
+// returns.
+type Encoder struct {
+	// low tracks the encoder's lower bound in the scaled interval.
+	// After `shift` renormalization doublings the interval is
+	// [low, low + rng) within the [0, 2^(15+shift)) space.
+	low       *big.Int
+	rng       uint64
+	shift     int
 	updateCDF bool
 }
 
-// Init resets the encoder state for a new tile. The decoder's Init
-// reads 15 bits and XORs with 0x7FFF to produce the starting
-// symbolValue. For encoder state (low=0) to match, we pre-emit 15
-// ones so that decoder.symbolValue = 0x7FFF ^ 0x7FFF = 0.
+// Init resets the encoder state for a new tile.
 func (e *Encoder) Init(allowCDFUpdate bool) {
-	e.low = 0
-	e.rng = SymbolRange0
-	e.nbits = 0
-	e.bitAcc = 0
-	e.bitCnt = 0
-	e.buf = e.buf[:0]
-	e.pending = 0
+	e.low = new(big.Int)
+	e.rng = SymbolRange0 // 32768
+	e.shift = 0
 	e.updateCDF = allowCDFUpdate
-	// Prime the output with 15 ones. The decoder's first F(15) reads
-	// these and XORs with 0x7FFF to yield symbolValue=0, which matches
-	// the encoder's implicit starting low.
-	for i := 0; i < 15; i++ {
-		e.emitBit(1)
-	}
 }
 
-// emitBit writes a single bit to the output byte stream (MSB first).
-func (e *Encoder) emitBit(b uint32) {
-	e.bitAcc = (e.bitAcc << 1) | uint8(b&1)
-	e.bitCnt++
-	if e.bitCnt == 8 {
-		e.buf = append(e.buf, e.bitAcc)
-		e.bitAcc = 0
-		e.bitCnt = 0
+// renormalize doubles low and rng until rng >= 32768. Each doubling
+// increments the shift counter so Finish knows how many renormalize
+// bits to emit.
+func (e *Encoder) renormalize() {
+	for e.rng < SymbolCarry {
+		e.low.Lsh(e.low, 1)
+		e.rng <<= 1
+		e.shift++
 	}
 }
 
 // EncodeBool writes a boolean whose probability of being 1 is p/32768.
 // Mirrors [Decoder.DecodeBool].
 func (e *Encoder) EncodeBool(bit uint32, p uint32) {
-	split := (e.rng - 1) * p >> 15
-	split += MinProb
+	split := (e.rng-1)*uint64(p)>>15 + MinProb
 	if bit == 0 {
 		e.rng = split
 	} else {
-		e.low += split
+		e.low.Add(e.low, new(big.Int).SetUint64(split))
 		e.rng -= split
 	}
-	// Renormalize: emit one output bit per doubling.
-	for e.rng < SymbolCarry {
-		// The bit that's "falling off" the top of the 15-bit window.
-		// The decoder will XOR the incoming bit into its symbolValue,
-		// which started as 0x7FFF^stream. So the emitted stream bit
-		// is the inverse of what the decoder expects symbolValue to
-		// gain on renormalize.
-		//
-		// Concretely: to make the decoder's symbolValue track the
-		// encoder's low, emit ((low >> 15) & 1) each renorm step.
-		outBit := (e.low >> 15) & 1
-		e.emitBit(outBit)
-		e.low = (e.low << 1) & 0xFFFF
-		e.rng <<= 1
-	}
+	e.renormalize()
 }
 
 // EncodeSymbol writes a symbol index drawn from a CDF, mirroring
-// [Decoder.DecodeSymbol].
+// [Decoder.DecodeSymbol]. cdf must have length N+1 where the final
+// slot is the update counter. Symbol indices past N-1 are clamped.
+//
+// The decoder's narrowing loop has one oddity: after eliminating
+// symbols 0..N-2 via the "SV >= prob_i" branch, it breaks
+// implicitly with symbol=N-1 without ever looking at cdf[N-1]. The
+// encoder mirrors this: for symbol == N-1 the final rng is simply
+// whatever's left after eliminating the prior probs.
 func (e *Encoder) EncodeSymbol(cdf []uint16, symbol int) {
 	N := len(cdf) - 1
 	if N < 1 || symbol < 0 || symbol >= N {
 		return
 	}
-	// Walk the CDF computing (lo, hi) bounds for this symbol, exactly
-	// as DecodeSymbol narrows the range.
 	r := e.rng
-	var lo, hi uint32
-	for i := 0; i <= symbol; i++ {
-		f := uint32(cdf[i])
+	loAdd := uint64(0)
+	// Eliminate symbols 0..symbol-1 (decoder's "take the eliminate branch").
+	for i := 0; i < symbol; i++ {
+		f := uint64(cdf[i])
 		factor := ((r >> 8) * (f >> ProbShift)) >> (7 - ProbShift)
-		factor += uint32(MinProb * (N - i - 1))
+		factor += uint64(MinProb * (N - i - 1))
 		prob := r - factor
-		if i == symbol {
-			lo = r - prob
-			hi = r
-			break
-		}
+		loAdd += prob
 		r -= prob
 	}
-	e.low += lo
-	e.rng = hi - lo
-	for e.rng < SymbolCarry {
-		outBit := (e.low >> 15) & 1
-		e.emitBit(outBit)
-		e.low = (e.low << 1) & 0xFFFF
-		e.rng <<= 1
+	var newRng uint64
+	if symbol == N-1 {
+		// Implicit-last path: no further prob computed.
+		newRng = r
+	} else {
+		f := uint64(cdf[symbol])
+		factor := ((r >> 8) * (f >> ProbShift)) >> (7 - ProbShift)
+		factor += uint64(MinProb * (N - symbol - 1))
+		newRng = r - factor
 	}
+	e.low.Add(e.low, new(big.Int).SetUint64(loAdd))
+	e.rng = newRng
+	e.renormalize()
 	if e.updateCDF {
 		updateCDF(cdf, N, symbol)
 	}
@@ -129,27 +111,49 @@ func (e *Encoder) EncodeLiteral(v uint32, n int) {
 	}
 }
 
-// Finish flushes remaining state and returns the serialized byte
-// stream. The decoder reads 15 bits from the head and XORs with
-// 0x7FFF, so we emit the final 15 bits of low (bit-inverted) plus
-// zero-padding up to a byte boundary.
+// Finish produces the serialized byte stream.
+//
+// At this point e.low is in [0, 2^(15+shift)). The decoder's initial
+// read is 15 bits XOR'd with 0x7FFF to produce symbolValue, followed
+// by 'shift' more bits read one-at-a-time during renormalization.
+//
+// For decoder.symbolValue to track e.low, we emit:
+//   - First 15 bits = 0x7FFF XOR high15bitsOf(low)
+//   - Next 'shift' bits = low's low 'shift' bits, MSB first
 func (e *Encoder) Finish() []byte {
-	// Emit up to 15 more bits to flush the low register.
-	for i := 0; i < 16; i++ {
-		e.EncodeBool(0, 16384)
+	bw := bitio.NewWriter()
+	// Split e.low into high-15-bits and low-shift-bits.
+	// high15 = low >> shift
+	// lowShift = low & ((1 << shift) - 1)
+	if e.shift < 0 {
+		e.shift = 0
 	}
-	if e.bitCnt > 0 {
-		e.bitAcc <<= uint(8 - e.bitCnt)
-		e.buf = append(e.buf, e.bitAcc)
-		e.bitAcc = 0
-		e.bitCnt = 0
+	shift := uint(e.shift)
+	high15 := new(big.Int).Rsh(e.low, shift)
+	// Mask into 15-bit value.
+	mask15 := new(big.Int).SetUint64((1 << 15) - 1)
+	high15.And(high15, mask15)
+
+	first15 := uint32(0x7FFF) ^ uint32(high15.Int64())
+	bw.F(15, first15)
+
+	// Emit 'shift' bits, MSB-first.
+	mask := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), shift), big.NewInt(1))
+	lowBits := new(big.Int).And(e.low, mask)
+	for i := int(shift) - 1; i >= 0; i-- {
+		bit := new(big.Int).Rsh(lowBits, uint(i))
+		bit.And(bit, big.NewInt(1))
+		bw.F(1, uint32(bit.Uint64()))
 	}
-	out := make([]byte, len(e.buf))
-	copy(out, e.buf)
-	return out
+
+	// Pad to byte boundary so trailing bitio reads don't overflow.
+	bw.ByteAlign()
+	return append([]byte(nil), bw.Bytes()...)
 }
 
-// Bytes returns the current emitted byte stream without finalizing.
+// Bytes returns the current buffer after calling Finish. Calling Bytes
+// without Finish is not useful — the deferred-emission design produces
+// output only at finalization.
 func (e *Encoder) Bytes() []byte {
-	return e.buf
+	return e.Finish()
 }
