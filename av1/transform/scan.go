@@ -60,3 +60,19 @@ func InverseScan(scan []int) []int {
 	}
 	return out
 }
+
+// ClampedScan builds a scan order for TX sizes where the coded region
+// is a subW × subH subblock of a fullW-wide block (spec §7.7.3 applies
+// to TX_64×*: only the top-left 32×32 coefficients are coded, the rest
+// are forced to zero). Each returned position is r*fullW + c with
+// r < subH and c < subW.
+func ClampedScan(subW, subH, fullW int) []int {
+	base := DefaultZigzagScan(subW, subH)
+	out := make([]int, len(base))
+	for i, p := range base {
+		r := p / subW
+		c := p % subW
+		out[i] = r*fullW + c
+	}
+	return out
+}

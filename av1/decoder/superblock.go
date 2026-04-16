@@ -468,7 +468,7 @@ func (td *TileDecoder) reconstructChromaResidual(
 		return err
 	}
 
-	numCoeffs := cw * ch
+	numCoeffs := len(scan)
 	coeffs, err := td.coeff.ReadCoefficients(txSizeIdx, 1 /*chroma*/, numCoeffs, scan, nzMap, cw, ch)
 	if err != nil {
 		return err
@@ -525,7 +525,9 @@ func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, b
 		txType = IntraTxTypeFor(txSet, raw)
 	}
 
-	numCoeffs := bw * bh
+	// For TX sizes that clamp the coded region (TX_64*_*) numCoeffs
+	// tracks the scan length (= EOB bucket size), not bw*bh.
+	numCoeffs := len(scan)
 	coeffs, err := td.coeff.ReadCoefficients(txSizeIdx, 0 /*luma*/, numCoeffs, scan, nzMap, bw, bh)
 	if err != nil {
 		return err
@@ -579,10 +581,16 @@ func selectTxParams(w, h int) (txSizeIdx int, nzMap []int8, scan []int, txSize t
 		return 2, cdfs.NzMapCtxOffset16x16[:], transform.DefaultZigzagScan(16, 16), transform.Tx16x16, nil
 	case w == 32 && h == 32:
 		return 3, cdfs.NzMapCtxOffset32x32[:], transform.DefaultZigzagScan(32, 32), transform.Tx32x32, nil
-	// TX_64x64 / 64x32 / 32x64 need a 32x32-subregion coefficient layout
-	// per spec §7.7.3 (high-frequency coefficients are forced zero).
-	// That layout is different enough that it's a separate pass — left
-	// unhandled here for now.
+	case w == 64 && h == 64:
+		// AV1 clamps TX_64x64 to the top-left 32×32 coefficient subregion
+		// (spec §7.7.3) — scan covers 1024 positions within a 64-wide
+		// block, IDCT64 runs on the full 64×64 coefficient grid with
+		// the outer positions implicitly zero.
+		return 4, cdfs.NzMapCtxOffset32x32[:], transform.ClampedScan(32, 32, 64), transform.Tx64x64, nil
+	case w == 64 && h == 32:
+		return 3, cdfs.NzMapCtxOffset32x32[:], transform.ClampedScan(32, 32, 64), transform.Tx64x32, nil
+	case w == 32 && h == 64:
+		return 3, cdfs.NzMapCtxOffset32x32[:], transform.DefaultZigzagScan(32, 32), transform.Tx32x64, nil
 
 	// Rectangular TX sizes.
 	case w == 4 && h == 8:

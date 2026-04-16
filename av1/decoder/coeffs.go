@@ -247,12 +247,11 @@ func (cd *CoeffDecoder) ReadUniformBit() uint32 {
 	return cd.dec.DecodeBool(16384)
 }
 
-// ReadCoefficients decodes a full 4×4 or 8×8 transform block's coefficients
-// from the bitstream, returning them in row-major layout.
-//
-// For blocks larger than 8×8 this currently returns
-// ErrCoeffDecodeUnimplemented — the full context derivation for larger
-// sizes needs the 1D-scan variants and additional tables.
+// ReadCoefficients decodes a transform block's coefficients and returns
+// them in row-major layout of size w*h. numCoeffs is the "EOB bucket"
+// size (which eob_multi* CDF to use) — for TX sizes that clamp the
+// coded region (TX_64*_*) this differs from w*h, so the two values are
+// taken separately. scan length must match numCoeffs.
 func (cd *CoeffDecoder) ReadCoefficients(
 	txSizeIdx, planeType int,
 	numCoeffs int,
@@ -260,7 +259,7 @@ func (cd *CoeffDecoder) ReadCoefficients(
 	nzMapOffset []int8,
 	w, h int,
 ) ([]int32, error) {
-	coeffs := make([]int32, numCoeffs)
+	coeffs := make([]int32, w*h)
 	if cd.ReadTXBSkip(txSizeIdx, 0) {
 		return coeffs, nil
 	}
@@ -274,11 +273,12 @@ func (cd *CoeffDecoder) ReadCoefficients(
 	}
 
 	if numCoeffs > 1024 {
-		return nil, fmt.Errorf("%w: TX > 32x32 not yet supported", ErrCoeffDecodeUnimplemented)
+		return nil, fmt.Errorf("%w: EOB bucket > 1024 not supported", ErrCoeffDecodeUnimplemented)
 	}
 
-	// Work buffer holding signed coefficient values in block-position order.
-	absLevels := make([]int8, numCoeffs)
+	// Work buffer sized by the full block (to let row/col math for
+	// neighbor contexts line up with the real 2D layout).
+	absLevels := make([]int8, w*h)
 
 	// Process coefficients in reverse scan order: from scan[eob-1] down to scan[0].
 	for i := eob - 1; i >= 0; i-- {
