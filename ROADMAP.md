@@ -101,8 +101,11 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       template generator in av1/filmgrain/ar.go
 - [x] Film grain: 73×73 luma + 38×38 chroma templates, 32×32 patch
       tiling via ApplyWithTemplate (av1/filmgrain/patch.go)
-- [ ] Film grain: bitstream film_grain_params wiring from the frame
-      header into a full Apply call at the end of the decoder pipeline
+- [x] Film grain: film_grain_params wired from the frame header —
+      per-plane scaling LUT + AR-shaped template + tiled apply as the
+      final post-processing step in runTileGroup
+- [ ] Film grain: spec-exact per-block hashing for the template
+      offset (tile-structure-dependent, currently simplified)
 
 ### Top level
 - [x] `colorspace`: YUV→RGB BT.601/709/2020 + Studio/Full range

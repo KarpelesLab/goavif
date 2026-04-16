@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/KarpelesLab/goavif/av1/cdef"
+	"github.com/KarpelesLab/goavif/av1/filmgrain"
 	"github.com/KarpelesLab/goavif/av1/loopfilter"
 	"github.com/KarpelesLab/goavif/av1/lr"
 	"github.com/KarpelesLab/goavif/av1/obu"
@@ -185,6 +186,7 @@ func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.
 	applyLoopFilter(fs, fh)
 	applyCDEF(fs, fh, sh)
 	applyLoopRestoration(fs, fh, sh)
+	applyFilmGrain(fs, fh, sh)
 	return nil
 }
 
@@ -249,6 +251,76 @@ func defaultUnitParams(rt uint8) lr.UnitFn {
 		}
 	}
 	return func(x, y int) lr.UnitParams { return lr.UnitParams{Filter: lr.FilterNone} }
+}
+
+// applyFilmGrain runs film grain synthesis on the reconstructed frame
+// when the bitstream's film_grain_params carry a non-zero grain seed.
+// AV1 specifies a 73×73 luma template + 38×38 chroma templates shaped
+// by AR coefficients then tiled as 32×32 patches over the output.
+//
+// The spec's tile-structure-dependent hashing step is a simplification
+// here — see av1/filmgrain/patch.go for the details. The luma /
+// chroma scaling curves, the grain seed, and AR shaping all come from
+// the parsed FilmGrainParams.
+func applyFilmGrain(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader) {
+	if !sh.FilmGrainParamsPresent {
+		return
+	}
+	g := &fh.FilmGrain
+	if !g.ApplyGrain || g.GrainSeed == 0 {
+		return
+	}
+
+	arLag := int(g.ARCoeffLag)
+	arShift := uint8(g.ARCoeffShiftMinus6) + 6
+	scalingShift := uint8(g.GrainScaleShift) + 8
+
+	// Luma path.
+	if g.NumYPoints > 0 {
+		points := make([]filmgrain.Point, g.NumYPoints)
+		for i := uint8(0); i < g.NumYPoints; i++ {
+			points[i] = filmgrain.Point{Value: g.PointYValue[i], Scale: g.PointYScaling[i]}
+		}
+		lut := filmgrain.BuildLUT(points)
+		yCoeffs := g.ARCoeffsY[:2*arLag*(arLag+1)]
+		tpl := filmgrain.NewLumaTemplate(g.GrainSeed, arLag, yCoeffs, arShift)
+		p := &filmgrain.Params{
+			GrainSeed:             g.GrainSeed,
+			ScalingY:              lut,
+			ScalingShift:          scalingShift,
+			ClipToRestrictedRange: g.ClipToRestrictedRange,
+		}
+		filmgrain.ApplyWithTemplate(fs.Y, fs.Width, fs.Height, fs.YStride, &lut, &tpl, p)
+	}
+
+	if fs.Monochrome {
+		return
+	}
+	applyChromaGrain := func(plane []uint8, numPoints uint8,
+		values, scales [10]uint8, arCoeffs [25]int8) {
+		if numPoints == 0 {
+			return
+		}
+		points := make([]filmgrain.Point, numPoints)
+		for i := uint8(0); i < numPoints; i++ {
+			points[i] = filmgrain.Point{Value: values[i], Scale: scales[i]}
+		}
+		lut := filmgrain.BuildLUT(points)
+		nCoeffs := 2*arLag*(arLag+1) + 1
+		if nCoeffs > len(arCoeffs) {
+			nCoeffs = len(arCoeffs)
+		}
+		tpl := filmgrain.NewChromaTemplate(g.GrainSeed^0xA5A5,
+			arLag, arCoeffs[:nCoeffs], arShift)
+		p := &filmgrain.Params{
+			GrainSeed:             g.GrainSeed ^ 0xA5A5,
+			ScalingShift:          scalingShift,
+			ClipToRestrictedRange: g.ClipToRestrictedRange,
+		}
+		filmgrain.ApplyWithTemplate(plane, fs.UVWidth, fs.UVHeight, fs.UVStride, &lut, &tpl, p)
+	}
+	applyChromaGrain(fs.U, g.NumCbPoints, g.PointCbValue, g.PointCbScaling, g.ARCoeffsCb)
+	applyChromaGrain(fs.V, g.NumCrPoints, g.PointCrValue, g.PointCrScaling, g.ARCoeffsCr)
 }
 
 // splitTileGroup separates a tile group payload into numTiles independent
