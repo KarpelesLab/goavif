@@ -10,6 +10,7 @@ import (
 
 	"github.com/KarpelesLab/goavif/av1/decoder"
 	"github.com/KarpelesLab/goavif/av1/obu"
+	"github.com/KarpelesLab/goavif/colorspace"
 	"github.com/KarpelesLab/goavif/isobmff"
 )
 
@@ -87,16 +88,23 @@ func Decode(r io.Reader) (image.Image, error) {
 	return frameToImage(frame)
 }
 
-// frameToImage builds an [image.Image] from a decoded [decoder.Frame]. For
-// 8-bit frames with populated YUV planes it returns a YCbCr (untouched
-// planes) to minimize copies. Callers needing RGB should use
+// frameToImage builds an [image.Image] from a decoded [decoder.Frame].
+//
+// 8-bit frames return an image.YCbCr that shares the decoded Y/U/V
+// planes to avoid copies. Callers needing RGB should use
 // [colorspace.ConvertPlanar420] on the YCbCr planes directly.
+//
+// 10/12-bit frames return an image.RGBA64 produced by
+// [colorspace.ConvertPlanar420_16] — the Go stdlib has no HBD planar
+// image type, so RGB conversion happens on the decode path.
+// Monochrome HBD returns image.Gray16 built from the high bits of the
+// luma plane.
 func frameToImage(f *decoder.Frame) (image.Image, error) {
 	if f == nil {
 		return nil, fmt.Errorf("goavif: nil frame")
 	}
-	if f.BitDepth != 8 {
-		return nil, fmt.Errorf("goavif: only 8-bit output implemented, frame is %d-bit", f.BitDepth)
+	if f.BitDepth > 8 {
+		return frameToImage16(f)
 	}
 	if f.Monochrome {
 		gray := image.NewGray(image.Rect(0, 0, f.Width, f.Height))
@@ -129,6 +137,42 @@ func frameToImage(f *decoder.Frame) (image.Image, error) {
 	if len(f.V) == len(img.Cr) {
 		copy(img.Cr, f.V)
 	}
+	return img, nil
+}
+
+// frameToImage16 converts a 10/12-bit decoded frame to an image.Image
+// in 16-bit-per-channel space. Monochrome frames land in Gray16;
+// 4:2:0 frames convert through YUV→RGB and return RGBA64. Other
+// subsamplings (4:2:2, 4:4:4) are not yet implemented for HBD.
+func frameToImage16(f *decoder.Frame) (image.Image, error) {
+	if f.Monochrome {
+		img := image.NewGray16(image.Rect(0, 0, f.Width, f.Height))
+		shift := uint(16 - f.BitDepth)
+		for i, v := range f.Y16 {
+			s := uint16(v) << shift
+			img.Pix[i*2+0] = uint8(s >> 8)
+			img.Pix[i*2+1] = uint8(s & 0xFF)
+		}
+		return img, nil
+	}
+	if f.Subsampling.X != 1 || f.Subsampling.Y != 1 {
+		return nil, fmt.Errorf("goavif: HBD non-4:2:0 subsampling %d/%d not yet implemented",
+			f.Subsampling.X, f.Subsampling.Y)
+	}
+	img := image.NewRGBA64(image.Rect(0, 0, f.Width, f.Height))
+	// Choose a matrix from the sequence header's CICP; fall back to
+	// BT.709 when unspecified, matching common AVIF encoder defaults.
+	mc := colorspace.MCBT709
+	rng := colorspace.Studio
+	if f.Seq != nil {
+		if f.Seq.Color.ColorRange {
+			rng = colorspace.Full
+		}
+		if cicp := colorspace.MatrixCoefficients(f.Seq.Color.MatrixCoefficients); cicp != colorspace.MCUnspecified {
+			mc = cicp
+		}
+	}
+	colorspace.ConvertPlanar420_16(img.Pix, f.Y16, f.U16, f.V16, f.Width, f.Height, mc, rng, f.BitDepth)
 	return img, nil
 }
 

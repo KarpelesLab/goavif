@@ -29,9 +29,17 @@ type Frame struct {
 	Subsampling struct{ X, Y uint8 }
 	Monochrome  bool
 
+	// Y / U / V hold the reconstructed planes for 8-bit frames; the
+	// slices are nil when BitDepth > 8.
 	Y []byte
 	U []byte
 	V []byte
+
+	// Y16 / U16 / V16 hold the reconstructed planes for 10/12-bit
+	// frames. nil when BitDepth == 8.
+	Y16 []uint16
+	U16 []uint16
+	V16 []uint16
 
 	YStride int
 	CStride int
@@ -92,11 +100,21 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 	}
 
 	// Run the tile decoder over the tile group payload.
-	fs := NewFrameState(
-		int(frameHdr.FrameWidth), int(frameHdr.FrameHeight),
-		int(seqHdr.Color.SubsamplingX), int(seqHdr.Color.SubsamplingY),
-		seqHdr.Color.Monochrome,
-	)
+	bd := int(seqHdr.Color.BitDepth)
+	var fs *FrameState
+	if bd > 8 {
+		fs = NewFrameStateHBD(
+			int(frameHdr.FrameWidth), int(frameHdr.FrameHeight),
+			int(seqHdr.Color.SubsamplingX), int(seqHdr.Color.SubsamplingY),
+			seqHdr.Color.Monochrome, bd,
+		)
+	} else {
+		fs = NewFrameState(
+			int(frameHdr.FrameWidth), int(frameHdr.FrameHeight),
+			int(seqHdr.Color.SubsamplingX), int(seqHdr.Color.SubsamplingY),
+			seqHdr.Color.Monochrome,
+		)
+	}
 	if err := runTileGroup(fs, tileGroupPayload, frameHdr, seqHdr); err != nil {
 		return nil, err
 	}
@@ -104,11 +122,14 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 	f := &Frame{
 		Width:      fs.Width,
 		Height:     fs.Height,
-		BitDepth:   int(seqHdr.Color.BitDepth),
+		BitDepth:   bd,
 		Monochrome: seqHdr.Color.Monochrome,
 		Y:          fs.Y,
 		U:          fs.U,
 		V:          fs.V,
+		Y16:        fs.Y16,
+		U16:        fs.U16,
+		V16:        fs.V16,
 		YStride:    fs.YStride,
 		CStride:    fs.UVStride,
 		Header:     frameHdr,

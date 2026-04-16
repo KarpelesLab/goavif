@@ -148,6 +148,11 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       subsamples from fs.Y16 and writes into fs.U16 / fs.V16.
       End-to-end HBD pipeline integration test runs partition walk
       + every post-processing step at 10 and 12 bit.
+- [x] 10/12-bit public output: decoder.Frame gains Y16 / U16 / V16
+      alongside the uint8 planes. goavif.Decode routes to
+      NewFrameStateHBD for 10/12-bit sequences. frameToImage returns
+      image.RGBA64 for 4:2:0 HBD (via colorspace.ConvertPlanar420_16)
+      and image.Gray16 for monochrome HBD.
 - [x] 10/12-bit film grain: filmgrain.ApplyWithTemplate16 tiles
       32×32 patches with bit-depth-aware clipping and restricted-
       range bounds scaled per bit depth (av1/filmgrain/apply16.go).
