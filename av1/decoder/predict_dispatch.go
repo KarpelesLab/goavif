@@ -57,16 +57,17 @@ func PredictIntra(dst []uint8, w, h int, mode IntraMode, n *Neighbors) error {
 		predict.SmoothVPred(dst, w, h, n.Above, n.Left)
 	case SmoothHPred:
 		predict.SmoothHPred(dst, w, h, n.Above, n.Left)
-	case D45Pred:
-		ae := n.AboveExtended
-		if ae == nil {
-			ae = n.Above
+	case D45Pred, D67Pred, D113Pred, D135Pred, D157Pred, D203Pred:
+		above := n.AboveExtended
+		if above == nil {
+			above = n.Above
 		}
-		predict.D45Pred(dst, w, h, ae)
-	case D135Pred:
-		predict.D135Pred(dst, w, h, n.Above, n.Left, n.AboveLeft)
-	case D113Pred, D157Pred, D203Pred, D67Pred:
-		return fmt.Errorf("intra mode %s not yet implemented", mode)
+		left := n.LeftExtended
+		if left == nil {
+			left = n.Left
+		}
+		angle := predict.ModeToAngleMap[mode]
+		predict.DirectionalPred(dst, w, h, above, left, angle)
 	}
 	return nil
 }

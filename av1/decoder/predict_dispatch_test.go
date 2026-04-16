@@ -1,7 +1,6 @@
 package decoder
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -33,14 +32,32 @@ func TestPredictIntraVRequiresAbove(t *testing.T) {
 	}
 }
 
-func TestPredictIntraD113Unimplemented(t *testing.T) {
-	n := &Neighbors{HaveAbove: true, HaveLeft: true, BitDepth: 8}
-	err := PredictIntra(make([]uint8, 16), 4, 4, D113Pred, n)
-	if err == nil {
-		t.Errorf("D113_PRED should report unimplemented")
+func TestPredictIntraAllDirectionalModesRun(t *testing.T) {
+	// Enough extended samples to keep the directional predictors in
+	// bounds for a 4×4 block.
+	ext := make([]uint8, 32)
+	for i := range ext {
+		ext[i] = 100
 	}
-	// Sanity: the error should mention the mode name.
-	if err != nil && !errors.Is(err, err) {
-		t.Errorf("error wrap broken: %v", err)
+	n := &Neighbors{
+		Above:         ext,
+		Left:          ext,
+		AboveExtended: ext,
+		LeftExtended:  ext,
+		HaveAbove:     true,
+		HaveLeft:      true,
+		BitDepth:      8,
+	}
+	for _, m := range []IntraMode{D45Pred, D67Pred, D113Pred, D135Pred, D157Pred, D203Pred} {
+		dst := make([]uint8, 16)
+		if err := PredictIntra(dst, 4, 4, m, n); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		// With constant inputs every output pixel should also be 100.
+		for i, v := range dst {
+			if v != 100 {
+				t.Errorf("%s dst[%d]=%d want 100", m, i, v)
+			}
+		}
 	}
 }
