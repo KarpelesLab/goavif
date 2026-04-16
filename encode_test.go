@@ -156,6 +156,39 @@ func TestEncodeDecodeNonBlackImage(t *testing.T) {
 	t.Logf("encoded size: %d bytes", buf.Len())
 }
 
+func TestEncodeDecodeSolidColorApproximatelyCorrect(t *testing.T) {
+	// Encode a solid white (255, 255, 255) image at quality=95
+	// (low quantizer) so the DC residual survives quantization.
+	// BT.601 Y for white ≈ 235 (studio range). Residual = 235-128 = 107.
+	// At Q=95 (baseQ≈13), DC_q≈16, so |107*1.414/16|≈9 → non-zero.
+	src := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for i := 0; i < len(src.Pix); i += 4 {
+		src.Pix[i+0] = 255
+		src.Pix[i+1] = 255
+		src.Pix[i+2] = 255
+		src.Pix[i+3] = 255
+	}
+	var buf bytes.Buffer
+	if err := Encode(&buf, src, &Options{Quality: 95}); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	img, err := Decode(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	switch v := img.(type) {
+	case *image.YCbCr:
+		yVal := v.Y[32*v.YStride+32]
+		t.Logf("center Y = %d (expected ~235, DC_PRED base 128)", yVal)
+		// With coefficient encoding, Y should be closer to 235 than to 128.
+		if yVal < 150 {
+			t.Fatalf("center Y = %d — coefficients may not be reaching the decoder (expected >150 for white)", yVal)
+		}
+	default:
+		t.Logf("decoded image type: %T", img)
+	}
+}
+
 func dimName(n int) string {
 	return "x" + itoa(n)
 }

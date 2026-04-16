@@ -238,25 +238,70 @@ func extractSequenceHeader(ct *isobmff.Container, itemID uint32) (*obu.SequenceH
 	return nil, fmt.Errorf("goavif: av1C has no sequence header OBU")
 }
 
-// imageToLumaY extracts a BT.601-weighted luma plane from an
-// arbitrary image.Image. Output is a width*height uint8 slice in
-// row-major order.
-func imageToLumaY(m image.Image) []uint8 {
+// imageToYUV420 extracts BT.601 Y/Cb/Cr planes from an image. Luma
+// is w*h; chroma planes are (w/2)*(h/2) via 2×2 box averaging.
+func imageToYUV420(m image.Image) (y, u, v []uint8) {
 	bounds := m.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
-	y := make([]uint8, w*h)
+	y = make([]uint8, w*h)
+	cw, ch := w>>1, h>>1
+	if cw < 1 {
+		cw = 1
+	}
+	if ch < 1 {
+		ch = 1
+	}
+	u = make([]uint8, cw*ch)
+	v = make([]uint8, cw*ch)
+	// Full-res YCbCr per pixel (BT.601 studio range for simplicity).
+	yf := make([]int, w*h)
+	uf := make([]int, w*h)
+	vf := make([]int, w*h)
 	for r := 0; r < h; r++ {
 		for c := 0; c < w; c++ {
 			rr, gg, bb, _ := m.At(bounds.Min.X+c, bounds.Min.Y+r).RGBA()
-			// BT.601 luma: Y = 0.299R + 0.587G + 0.114B (>>8 to go from 16-bit to 8-bit)
-			luma := (19595*rr + 38470*gg + 7471*bb + (1 << 23)) >> 24
-			if luma > 255 {
-				luma = 255
-			}
-			y[r*w+c] = uint8(luma)
+			R := int(rr >> 8)
+			G := int(gg >> 8)
+			B := int(bb >> 8)
+			yv := (66*R + 129*G + 25*B + 128) >> 8
+			uv := (-38*R - 74*G + 112*B + 128) >> 8
+			vv := (112*R - 94*G - 18*B + 128) >> 8
+			y[r*w+c] = clampByte(yv + 16)
+			yf[r*w+c] = yv + 16
+			uf[r*w+c] = uv + 128
+			vf[r*w+c] = vv + 128
 		}
 	}
-	return y
+	// 2×2 box downsample for chroma.
+	for cr := 0; cr < ch; cr++ {
+		for cc := 0; cc < cw; cc++ {
+			su, sv := 0, 0
+			n := 0
+			for dy := 0; dy < 2 && cr*2+dy < h; dy++ {
+				for dx := 0; dx < 2 && cc*2+dx < w; dx++ {
+					idx := (cr*2+dy)*w + (cc*2 + dx)
+					su += uf[idx]
+					sv += vf[idx]
+					n++
+				}
+			}
+			if n > 0 {
+				u[cr*cw+cc] = clampByte(su / n)
+				v[cr*cw+cc] = clampByte(sv / n)
+			}
+		}
+	}
+	return y, u, v
+}
+
+func clampByte(v int) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
 }
 
 // findIprp returns the iprp box from a parsed Container, or nil.
@@ -334,9 +379,9 @@ func Encode(w io.Writer, m image.Image, opts *Options) error {
 	if err != nil {
 		return err
 	}
-	// Convert input image to luma (Y) plane for the encoder.
-	lumaY := imageToLumaY(m)
-	tilePayload, err := encoder.WriteIntraOnlyTile(width, height, fh, sh, lumaY)
+	// Convert input image to YUV planes for the encoder.
+	lumaY, chromaU, chromaV := imageToYUV420(m)
+	tilePayload, err := encoder.WriteIntraOnlyTile(width, height, fh, sh, lumaY, chromaU, chromaV)
 	if err != nil {
 		return err
 	}

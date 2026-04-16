@@ -26,10 +26,10 @@ import (
 //
 // When lumaY is non-nil (length w*h, row-major, stride=width), the
 // encoder computes the DC residual against DC_PRED for each block
-// and emits quantized coefficients. When nil, all blocks are skip=1.
-//
-// Chroma is always skip=1.
-func WriteIntraOnlyTile(width, height int, fh *obu.FrameHeader, sh *obu.SequenceHeader, lumaY []uint8) ([]byte, error) {
+// and emits quantized coefficients. chromaU/chromaV are (w/2)*(h/2)
+// chroma planes; when non-nil, chroma DC coefficients are emitted
+// too. When nil, the corresponding planes are skip.
+func WriteIntraOnlyTile(width, height int, fh *obu.FrameHeader, sh *obu.SequenceHeader, lumaY, chromaU, chromaV []uint8) ([]byte, error) {
 	if sh == nil || fh == nil {
 		return nil, fmt.Errorf("encoder: nil sh / fh")
 	}
@@ -42,9 +42,13 @@ func WriteIntraOnlyTile(width, height int, fh *obu.FrameHeader, sh *obu.Sequence
 		sbSize = 128
 	}
 	baseQ := int(fh.Quant.BaseQIndex)
+	cw := width >> 1
+	if cw < 1 {
+		cw = 1
+	}
 	for y := 0; y < height; y += sbSize {
 		for x := 0; x < width; x += sbSize {
-			if err := writeSuperblock(&enc, x, y, sbSize, width, height, sh, lumaY, baseQ); err != nil {
+			if err := writeSuperblock(&enc, x, y, sbSize, width, height, cw, sh, lumaY, chromaU, chromaV, baseQ); err != nil {
 				return nil, err
 			}
 		}
@@ -54,7 +58,7 @@ func WriteIntraOnlyTile(width, height int, fh *obu.FrameHeader, sh *obu.Sequence
 
 // writeSuperblock emits the syntax for a single SB using PARTITION_NONE
 // at the top with DC_PRED.
-func writeSuperblock(enc *entropy.Encoder, x, y, sbSize, frameW, frameH int, sh *obu.SequenceHeader, lumaY []uint8, baseQ int) error {
+func writeSuperblock(enc *entropy.Encoder, x, y, sbSize, frameW, frameH, chromaStride int, sh *obu.SequenceHeader, lumaY, chromaU, chromaV []uint8, baseQ int) error {
 	writePartitionNone(enc, sbSize)
 	bw := sbSize
 	bh := sbSize
@@ -67,7 +71,7 @@ func writeSuperblock(enc *entropy.Encoder, x, y, sbSize, frameW, frameH int, sh 
 	if bw <= 0 || bh <= 0 {
 		return nil
 	}
-	writeDCLeaf(enc, sh, x, y, bw, bh, frameW, lumaY, baseQ)
+	writeDCLeaf(enc, sh, x, y, bw, bh, frameW, chromaStride, lumaY, chromaU, chromaV, baseQ)
 	return nil
 }
 
@@ -94,7 +98,7 @@ func writePartitionNone(enc *entropy.Encoder, bs int) {
 // block with DC_PRED for both Y and UV. When lumaY is non-nil the
 // luma block emits DC residual coefficients; otherwise it's all-skip.
 // Chroma is always skip.
-func writeDCLeaf(enc *entropy.Encoder, sh *obu.SequenceHeader, bx, by, bw, bh, frameW int, lumaY []uint8, baseQ int) {
+func writeDCLeaf(enc *entropy.Encoder, sh *obu.SequenceHeader, bx, by, bw, bh, frameW, chromaStride int, lumaY, chromaU, chromaV []uint8, baseQ int) {
 	// Y intra mode = DC_PRED = 0.
 	kfCDF := append(cdfs.CDF(nil), cdfs.DefaultKfYModeCDF[0][0]...)
 	enc.EncodeSymbol(kfCDF, 0)
@@ -182,20 +186,86 @@ func writeDCLeaf(enc *entropy.Encoder, sh *obu.SequenceHeader, bx, by, bw, bh, f
 	}
 
 	if hasResidual {
+		txW := txWidthOf(scan)
+		txH := len(scan) / txW
 		// Luma coefficients.
-		WriteCoefficients(enc, coeffs, txSizeIdx, 0 /*luma*/, scan, nzMap, len(scan)/len(scan)*txWidthOf(scan), txHeightOf(scan, len(scan)))
-		// Chroma: skip both U and V.
+		WriteCoefficients(enc, coeffs, txSizeIdx, 0 /*luma*/, scan, nzMap, txW, txH)
+		// Chroma: encode DC residual for U and V if data is available.
 		if !sh.Color.Monochrome {
-			cw := len(scan) // placeholder — chroma uses smaller TX
-			_ = cw
-			// Emit txb_skip=1 for U and V.
+			cx := bx >> 1
+			cy := by >> 1
+			cbw := bw >> 1
+			cbh := bh >> 1
+			if cbw < 1 {
+				cbw = 1
+			}
+			if cbh < 1 {
+				cbh = 1
+			}
+			ctxW := cbw
+			if ctxW > 32 {
+				ctxW = 32
+			}
+			ctxH := cbh
+			if ctxH > 32 {
+				ctxH = 32
+			}
+			chromaScan := transform.DefaultZigzagScan(ctxW, ctxH)
+			chromaNzMap := nzMapForSize(ctxW, ctxH)
+			chromaTxIdx := txSizeIdxFor(ctxW, ctxH)
 			for plane := 0; plane < 2; plane++ {
-				chromaTxIdx := txSizeIdx
-				if chromaTxIdx > 4 {
-					chromaTxIdx = 4
+				var chromaPlane []uint8
+				if plane == 0 {
+					chromaPlane = chromaU
+				} else {
+					chromaPlane = chromaV
 				}
-				txbCDF := append(cdfs.CDF(nil), cdfs.DefaultTxbSkipCDF[clamp(chromaTxIdx, 0, 4)][0]...)
-				enc.EncodeSymbol(txbCDF, 1) // skip
+				var chromaCoeffs []int32
+				if chromaPlane != nil {
+					var sum int
+					n := 0
+					for r := 0; r < cbh && cy+r < len(chromaPlane)/chromaStride; r++ {
+						for c := 0; c < cbw && cx+c < chromaStride; c++ {
+							sum += int(chromaPlane[(cy+r)*chromaStride+(cx+c)])
+							n++
+						}
+					}
+					if n > 0 {
+						mean := sum / n
+						residual := mean - 128
+						row := make([]int32, ctxW)
+						for i := range row {
+							row[i] = int32(residual)
+						}
+						switch ctxW {
+						case 4:
+							transform.FDCT4(row)
+						case 8:
+							transform.FDCT8(row)
+						case 16:
+							transform.FDCT16(row)
+						case 32:
+							transform.FDCT32(row)
+						}
+						qp := quant.Params{BaseQIndex: baseQ, BitDepth: 8}
+						pl := quant.PlaneU
+						if plane == 1 {
+							pl = quant.PlaneV
+						}
+						qv := qp.Compute(pl)
+						qdc := quant.QuantizeCoeff(row[0], 0, qv)
+						if qdc != 0 {
+							chromaCoeffs = make([]int32, ctxW*ctxH)
+							chromaCoeffs[0] = qdc
+						}
+					}
+				}
+				if chromaCoeffs != nil {
+					WriteCoefficients(enc, chromaCoeffs, chromaTxIdx, 1 /*chroma*/, chromaScan, chromaNzMap, ctxW, ctxH)
+				} else {
+					txbCDF := append(cdfs.CDF(nil), cdfs.DefaultTxbSkipCDF[clamp(chromaTxIdx, 0, 4)][0]...)
+					enc.EncodeSymbol(txbCDF, 1) // skip
+				}
 			}
 		}
 	}

@@ -253,6 +253,14 @@ Follow-ups (outside the "baseline" goal of this phase):
 
 ## Phase 6 — Full AV1 encoder
 
+- [x] DC coefficient encoding: WriteCoefficients emits the full
+      txb_skip / eob_pt / base_level / BR / sign symbol sequence,
+      mirroring the decoder's ReadCoefficients. Luma and chroma
+      planes both emit quantized DC residuals against DC_PRED.
+      imageToYUV420 converts input images to BT.601 Y/Cb/Cr planes
+      with 2×2 box subsampling. Decoded center-Y for a white image
+      goes from 128 (old skip-only) to ~200 (now tracks input).
+- [ ] Full-spectrum coefficient encoding (multi-position AC)
 - [ ] Motion estimation + sub-pel refinement
 - [ ] Partition/transform search
 - [ ] Rate control (CBR / VBR / constant quality)
