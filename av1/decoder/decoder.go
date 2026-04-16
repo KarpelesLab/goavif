@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/KarpelesLab/goavif/av1/loopfilter"
 	"github.com/KarpelesLab/goavif/av1/obu"
 )
 
@@ -142,5 +143,42 @@ func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.
 			}
 		}
 	}
+
+	applyLoopFilter(fs, fh)
 	return nil
+}
+
+// applyLoopFilter runs the 4-tap narrow deblocking filter on the Y plane
+// and (if present) the U / V planes. Edges are at fixed 8-pixel strides
+// (the smallest AV1 TX grid common to all sizes); the real spec walks
+// the per-block transform grid. This simpler form is sufficient for
+// intra-only stills where TX sizes rarely cross MB boundaries without
+// being aligned.
+func applyLoopFilter(fs *FrameState, fh *obu.FrameHeader) {
+	if fh.LoopFilter.LevelY0 == 0 && fh.LoopFilter.LevelY1 == 0 {
+		return
+	}
+	th := loopfilter.DeriveThresholds(int(fh.LoopFilter.LevelY0), int(fh.LoopFilter.Sharpness))
+	yPlane := loopfilter.Plane{
+		Pix: fs.Y, Stride: fs.YStride,
+		Width: fs.Width, Height: fs.Height,
+	}
+	loopfilter.ApplyFrameNarrow(yPlane, loopfilter.UniformGrid(fs.Width, fs.Height, 8, 8), th)
+
+	if !fs.Monochrome {
+		uvLvl := int(fh.LoopFilter.LevelU)
+		if uvLvl == 0 {
+			return
+		}
+		thUV := loopfilter.DeriveThresholds(uvLvl, int(fh.LoopFilter.Sharpness))
+		grid := loopfilter.UniformGrid(fs.UVWidth, fs.UVHeight, 8, 8)
+		loopfilter.ApplyFrameNarrow(loopfilter.Plane{
+			Pix: fs.U, Stride: fs.UVStride,
+			Width: fs.UVWidth, Height: fs.UVHeight,
+		}, grid, thUV)
+		loopfilter.ApplyFrameNarrow(loopfilter.Plane{
+			Pix: fs.V, Stride: fs.UVStride,
+			Width: fs.UVWidth, Height: fs.UVHeight,
+		}, grid, thUV)
+	}
 }
