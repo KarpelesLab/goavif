@@ -202,6 +202,12 @@ func (cd *CoeffDecoder) ReadDCSign(planeType, ctx int) bool {
 	return cd.dec.DecodeSymbol(cd.dcSignCDF[planeType][ctx]) != 0
 }
 
+// ReadUniformBit reads an unadapted 50/50 bit from the arithmetic-coded
+// stream. Used for AC-coefficient sign bits and the tail of eob_extra.
+func (cd *CoeffDecoder) ReadUniformBit() uint32 {
+	return cd.dec.DecodeBool(16384)
+}
+
 // ReadCoefficients decodes a full 4×4 or 8×8 transform block's coefficients
 // from the bitstream, returning them in row-major layout.
 //
@@ -275,13 +281,23 @@ func (cd *CoeffDecoder) ReadCoefficients(
 		coeffs[pos] = int32(level)
 	}
 
-	// Sign decoding for position 0 (DC): uses dc_sign CDF.
-	// Signs for other positions: read as uncoded bits (deferred pending
-	// bypass reader exposure). For now, assume positive signs which is
-	// wrong bitstream-wise but keeps the types flowing.
+	// Signs — DC uses a context-adapted CDF, AC positions use raw 50/50
+	// bits from the arithmetic coder.
+	//
+	// The spec reads signs AFTER all levels are decoded, in forward scan
+	// order. For the DC the dc_sign CDF is used with a context derived
+	// from neighbor DC signs (simplified to 0 here).
 	if coeffs[0] > 0 {
 		if cd.ReadDCSign(planeType, 0) {
 			coeffs[0] = -coeffs[0]
+		}
+	}
+	for i := 1; i < eob; i++ {
+		pos := scan[i]
+		if coeffs[pos] > 0 {
+			if cd.ReadUniformBit() != 0 {
+				coeffs[pos] = -coeffs[pos]
+			}
 		}
 	}
 	return coeffs, nil
