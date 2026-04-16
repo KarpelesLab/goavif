@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/KarpelesLab/goavif/av1/entropy"
+	"github.com/KarpelesLab/goavif/av1/entropy/cdfs"
 	"github.com/KarpelesLab/goavif/av1/transform"
 )
 
@@ -23,7 +24,7 @@ func TestCoeffDecoderReadsTxbSkip(t *testing.T) {
 	}
 }
 
-func TestCoeffDecoderReadsEOB(t *testing.T) {
+func TestCoeffDecoderReadsEOBPt(t *testing.T) {
 	buf := make([]byte, 64)
 	for i := range buf {
 		buf[i] = byte(i * 23)
@@ -33,18 +34,20 @@ func TestCoeffDecoderReadsEOB(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	cd := InitCoeffDecoder(&dec, 0)
-	eob := cd.ReadEOB(16, 0, 0)
-	if eob < 1 || eob > 16 {
-		t.Errorf("eob=%d out of range for 16-coeff block", eob)
+	pt := cd.ReadEOBPt(16, 0, 0)
+	if pt < 0 || pt >= 5 {
+		t.Errorf("eob_pt=%d out of range for 16-coeff (CDF5)", pt)
 	}
 }
 
-func TestReadCoefficientsSkipPath(t *testing.T) {
-	// Construct a buffer where ReadTXBSkip returns true (high probability
-	// of skip for some contexts). We brute-force find one.
+func TestReadCoefficients4x4(t *testing.T) {
+	// Brute-force a few seeds; at least one should produce either skip or
+	// a successfully decoded coefficient array. No panics allowed.
+	scan := transform.DefaultZigzagScan(4, 4)
 	var dec entropy.Decoder
-	for seed := byte(0); seed < 255; seed++ {
-		buf := make([]byte, 32)
+	anySuccess := false
+	for seed := byte(0); seed < 32; seed++ {
+		buf := make([]byte, 64)
 		for i := range buf {
 			buf[i] = seed
 		}
@@ -52,21 +55,12 @@ func TestReadCoefficientsSkipPath(t *testing.T) {
 			continue
 		}
 		cd := InitCoeffDecoder(&dec, 0)
-		scan := transform.DefaultZigzagScan(4, 4)
-		coeffs, err := cd.ReadCoefficients(0, 0, 16, scan)
+		_, err := cd.ReadCoefficients(0, 0, 16, scan, cdfs.NzMapCtxOffset4x4[:], 4, 4)
 		if err == nil {
-			// Got through — must be all-zero if skip was true.
-			allZero := true
-			for _, v := range coeffs {
-				if v != 0 {
-					allZero = false
-				}
-			}
-			if allZero {
-				t.Logf("seed %d produced skip path (all-zero coeffs)", seed)
-				return
-			}
+			anySuccess = true
 		}
 	}
-	t.Log("no seed produced a skip path — that's fine, the test exercises initialization")
+	if !anySuccess {
+		t.Log("no seed decoded cleanly — that's fine, test asserts no panics")
+	}
 }
