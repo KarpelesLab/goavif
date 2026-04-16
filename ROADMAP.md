@@ -114,8 +114,13 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
 - [x] `goavif.DecodeConfig`: works standalone (ispe / pixi / av1C)
 - [x] `cmd/goavif-info`: container/sequence-header inspector CLI
 - [ ] Golden tests vs dav1d on AOM intra-only test vectors
-- [ ] 10/12-bit pixel plane path (quant tables in place; FrameState is
-      still uint8 — needs uint16 plane type + colorspace widening)
+- [x] 10/12-bit intra predictors (av1/predict/intra16.go): uint16
+      DC/V/H/Paeth/Smooth/SmoothV/SmoothH with bit-depth-aware DC
+      fallback. Directional predictors + reconstruction path still
+      pending.
+- [ ] 10/12-bit full plane pipeline: FrameState uint16 plane storage,
+      uint16 directional intra, uint16 reconstruction, widened
+      colorspace output
 
 ## Phase 3 — spec-complete decoder
 
