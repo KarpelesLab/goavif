@@ -94,8 +94,10 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
       (tie into the decoder after CDEF)
 - [x] Film grain synthesis: seeded LFSR RNG (spec §7.20.2) + piecewise-
       linear scaling-curve LUT + per-plane Apply driver (naive tiling)
-- [ ] Film grain: 32×32 grain template with AR-coefficient shaping +
-      block-to-template mapping (spec §7.20.3)
+- [x] Film grain: AR-coefficient shaping (spec §7.20.3.3) + grain
+      template generator in av1/filmgrain/ar.go
+- [ ] Film grain: 32×32 grain patch tiling with block-to-template
+      position mapping + bitstream film_grain_params wiring
 
 ### Top level
 - [x] `colorspace`: YUV→RGB BT.601/709/2020 + Studio/Full range
