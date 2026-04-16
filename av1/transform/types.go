@@ -75,6 +75,10 @@ func RowOp(ty TxType, sz TxSize) Dim1D {
 		switch rowKind(ty) {
 		case kindDCT:
 			return IDCT8
+		case kindADST:
+			return IADST8
+		case kindFLIPADST:
+			return IFLIPADST8
 		case kindIDTX:
 			return IDTX8
 		}
