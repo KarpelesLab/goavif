@@ -142,8 +142,10 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
 - [x] 10/12-bit film grain: filmgrain.ApplyWithTemplate16 tiles
       32×32 patches with bit-depth-aware clipping and restricted-
       range bounds scaled per bit depth (av1/filmgrain/apply16.go).
-- [ ] 10/12-bit colorspace output: image.YCbCr with 16-bit backing
-      buffers + 10/12-bit-aware YUV→RGB matrices.
+- [x] 10/12-bit colorspace: colorspace.YUVToRGB16 +
+      ConvertPlanar420_16 produce 16-bit-per-channel output from
+      10/12-bit YUV, honoring studio vs full range and CICP matrix
+      selection (colorspace/yuv_rgb16.go).
 
 ## Phase 3 — spec-complete decoder
 
