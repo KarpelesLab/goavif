@@ -491,6 +491,25 @@ func selectTxParams(w, h int) (txSizeIdx int, nzMap []int8, scan []int, txSize t
 		return 2, cdfs.NzMapCtxOffset16x16[:], transform.DefaultZigzagScan(16, 16), transform.Tx16x16, nil
 	case w == 32 && h == 32:
 		return 3, cdfs.NzMapCtxOffset32x32[:], transform.DefaultZigzagScan(32, 32), transform.Tx32x32, nil
+
+	// Rectangular TX sizes.
+	case w == 4 && h == 8:
+		return 1, cdfs.NzMapCtxOffset4x8[:], transform.DefaultZigzagScan(4, 8), transform.Tx4x8, nil
+	case w == 8 && h == 4:
+		// TX_8x4 reuses the 16x4 context table per libaom symmetry.
+		return 1, cdfs.NzMapCtxOffset16x4[:], transform.DefaultZigzagScan(8, 4), transform.Tx8x4, nil
+	case w == 8 && h == 16:
+		return 2, cdfs.NzMapCtxOffset8x16[:], transform.DefaultZigzagScan(8, 16), transform.Tx8x16, nil
+	case w == 16 && h == 8:
+		return 2, cdfs.NzMapCtxOffset32x8[:], transform.DefaultZigzagScan(16, 8), transform.Tx16x8, nil
+	case w == 4 && h == 16:
+		return 2, cdfs.NzMapCtxOffset4x16[:], transform.DefaultZigzagScan(4, 16), transform.Tx4x16, nil
+	case w == 16 && h == 4:
+		return 2, cdfs.NzMapCtxOffset16x4[:], transform.DefaultZigzagScan(16, 4), transform.Tx16x4, nil
+	case w == 8 && h == 32:
+		return 3, cdfs.NzMapCtxOffset8x32[:], transform.DefaultZigzagScan(8, 32), transform.Tx8x32, nil
+	case w == 32 && h == 8:
+		return 3, cdfs.NzMapCtxOffset32x8[:], transform.DefaultZigzagScan(32, 8), transform.Tx32x8, nil
 	}
 	return 0, nil, nil, 0, fmt.Errorf("%w: TX %dx%d not yet supported", ErrCoeffDecodeUnimplemented, w, h)
 }
