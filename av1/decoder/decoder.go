@@ -285,34 +285,56 @@ func splitTileGroup(payload []byte, numTiles, tileSizeBytes int) ([][]byte, erro
 
 // applyCDEF runs the constrained directional enhancement filter after
 // deblocking. AV1 signals per-superblock cdef_idx bits selecting one of
-// Cdef.YPriStrengths[i] (plus matching secondary / UV strengths); the
-// per-SB signaling isn't yet parsed, so we apply strengths[0] to every
-// 8×8 block as a reasonable default approximating libavif encoder
-// behavior.
+// up to eight (primary, secondary) strength pairs. Per-SB idx values
+// are decoded into fs.CdefIdx during the partition walk; SBs with the
+// sentinel 255 fall back to strengths[0].
 func applyCDEF(fs *FrameState, fh *obu.FrameHeader, sh *obu.SequenceHeader) {
 	if !sh.EnableCdef {
 		return
 	}
 	damping := int(fh.Cdef.CdefDampingMinus3) + 3
-	// Luma.
-	pri := scaleCDEFPriStrength(int(fh.Cdef.YPriStrengths[0]))
-	sec := scaleCDEFSecStrength(int(fh.Cdef.YSecStrengths[0]))
-	cdef.ApplyFrame(cdef.Plane{
+	// Luma — resolve (pri, sec) from the cdef_idx at the containing 64×64 SB.
+	yStrength := func(x, y int) (int, int) {
+		idx := cdefIdxAt(fs, x, y)
+		return scaleCDEFPriStrength(int(fh.Cdef.YPriStrengths[idx])),
+			scaleCDEFSecStrength(int(fh.Cdef.YSecStrengths[idx]))
+	}
+	cdef.ApplyFramePerSB(cdef.Plane{
 		Pix: fs.Y, Stride: fs.YStride, Width: fs.Width, Height: fs.Height,
-	}, pri, sec, damping)
+	}, yStrength, damping)
 	if fs.Monochrome {
 		return
 	}
-	pri = scaleCDEFPriStrength(int(fh.Cdef.UVPriStrengths[0]))
-	sec = scaleCDEFSecStrength(int(fh.Cdef.UVSecStrengths[0]))
-	// Chroma uses damping - 1 per spec.
+	// Chroma uses damping - 1 per spec. Chroma block-to-SB mapping must
+	// account for subsampling: the 64×64 SB footprint in chroma is
+	// (64>>SubX)×(64>>SubY). Scale x/y back up when looking up the idx.
 	dmp := damping - 1
-	cdef.ApplyFrame(cdef.Plane{
+	uvStrength := func(x, y int) (int, int) {
+		idx := cdefIdxAt(fs, x<<fs.SubX, y<<fs.SubY)
+		return scaleCDEFPriStrength(int(fh.Cdef.UVPriStrengths[idx])),
+			scaleCDEFSecStrength(int(fh.Cdef.UVSecStrengths[idx]))
+	}
+	cdef.ApplyFramePerSB(cdef.Plane{
 		Pix: fs.U, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
-	}, pri, sec, dmp)
-	cdef.ApplyFrame(cdef.Plane{
+	}, uvStrength, dmp)
+	cdef.ApplyFramePerSB(cdef.Plane{
 		Pix: fs.V, Stride: fs.UVStride, Width: fs.UVWidth, Height: fs.UVHeight,
-	}, pri, sec, dmp)
+	}, uvStrength, dmp)
+}
+
+// cdefIdxAt returns the cdef_idx for the 64×64 SB containing plane
+// coordinate (x, y), or 0 when the SB wasn't signaled (sentinel 255).
+func cdefIdxAt(fs *FrameState, x, y int) int {
+	col := x >> 6
+	row := y >> 6
+	if col >= fs.SBCols || row >= fs.SBRows {
+		return 0
+	}
+	idx := fs.CdefIdx[row*fs.SBCols+col]
+	if idx == 255 {
+		return 0
+	}
+	return int(idx)
 }
 
 // scaleCDEFPriStrength maps the 4-bit primary-strength signal 0..15 to

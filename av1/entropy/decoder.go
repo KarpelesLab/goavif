@@ -133,6 +133,20 @@ func (d *Decoder) renormalize() {
 	}
 }
 
+// ReadLiteral reads n uncompressed bits from the entropy-coder stream
+// by decoding n raw 50/50 bools. Per spec §5.9.3 this is how
+// cdef_idx, delta_qindex magnitude, and similar unadapted literals are
+// carried over the range-coded payload.
+//
+// n must be in [0, 32]; caller must ensure that bound.
+func (d *Decoder) ReadLiteral(n int) uint32 {
+	var v uint32
+	for i := 0; i < n; i++ {
+		v = (v << 1) | d.DecodeBool(16384)
+	}
+	return v
+}
+
 // Err returns any error latched by the underlying bit reader.
 func (d *Decoder) Err() error { return d.br.Err() }
 
