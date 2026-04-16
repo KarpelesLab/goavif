@@ -244,6 +244,12 @@ func ParseStbl(payload []byte) (*Stbl, error) {
 				return nil, err
 			}
 			children[i] = x
+		case TypeStss:
+			x, err := ParseStss(rb.Payload)
+			if err != nil {
+				return nil, err
+			}
+			children[i] = x
 		}
 	}
 	return &Stbl{Children: children}, nil

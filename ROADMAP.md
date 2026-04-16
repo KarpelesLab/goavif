@@ -174,7 +174,7 @@ Parity with the reference conformance suite.
 - [ ] Monochrome, 4:2:2, 4:4:4 chroma sampling fully exercised
 - [ ] Conformance harness driven from official AV1 test vectors
 
-## Phase 4 — Alpha, HDR, image sequences
+## Phase 4 — Alpha, HDR, image sequences ✅
 
 - [x] Alpha: findAlphaItemID resolves auxl iref + auxC alpha URN,
       decodeAlphaFrame runs the aux AV1 stream through the existing
@@ -187,15 +187,18 @@ Parity with the reference conformance suite.
       function passthrough is bitstream-level (decoder produces
       linear-relative YUV regardless of signaled transfer).
 - [x] Image sequences: parse `moov`/`trak`/`mdia`/`minf`/`stbl`
-      plus stts/stsc/stsz/stco/co64. Stbl.SampleTable walks the
-      compact tables into a flat []Sample. Moov.ImageTrackStbl
-      dives through the trak hierarchy to find the image track.
+      plus stts/stsc/stsz/stco/co64/stss. Stbl.SampleTable walks the
+      compact tables into a flat []Sample with per-sample IsSync
+      flags. Moov.ImageTrackStbl dives through the trak hierarchy
+      to find the image track.
 - [x] `goavif.DecodeAll` public API: reads AVIF stills as a single
       1-frame slice, AVIS sequences as per-sample frames +
       time.Duration timings.
-- [ ] Image sequences: sync-sample / CRA handling (currently every
-      frame is decoded as a standalone keyframe — works for
-      intra-only AVIS, which is common).
+- [x] Sync-sample / CRA handling: stss parsing + per-sample IsSync
+      in the sample table. DecodeAll decodes sync samples directly
+      and repeats the previous frame for inter frames, returning
+      ErrInterPredictionNotImplemented so callers can detect the
+      degraded output. Full-inter support lands with Phase 5+.
 
 ## Phase 5 — AV1 encoder: intra-only baseline
 

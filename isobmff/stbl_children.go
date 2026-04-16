@@ -175,6 +175,58 @@ func ParseStco(payload []byte) (*Stco, error) {
 	return s, nil
 }
 
+// Stss is the sync sample box (§8.6.2). It lists the 1-based indices
+// of samples that are sync points — for AV1 these are keyframes that
+// can be decoded without any prior reference. When stss is absent,
+// every sample is a sync sample (i.e. intra-only bitstream).
+type Stss struct {
+	FullBoxHeader
+	// SampleNumbers are 1-based indices of sync samples, sorted
+	// ascending.
+	SampleNumbers []uint32
+}
+
+func (*Stss) BoxType() FourCC { return TypeStss }
+
+func (s *Stss) MarshalPayload() ([]byte, error) {
+	return nil, fmt.Errorf("%w: Stss.MarshalPayload not implemented", ErrInvalid)
+}
+
+func ParseStss(payload []byte) (*Stss, error) {
+	fbh, rest, err := readFullBoxHeader(payload)
+	if err != nil {
+		return nil, err
+	}
+	c := newCursor(rest)
+	n := c.readU32()
+	s := &Stss{FullBoxHeader: fbh, SampleNumbers: make([]uint32, 0, n)}
+	for i := uint32(0); i < n; i++ {
+		s.SampleNumbers = append(s.SampleNumbers, c.readU32())
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	return s, nil
+}
+
+// IsSync reports whether the 1-based sampleIndex is a sync sample.
+func (s *Stss) IsSync(sampleIndex uint32) bool {
+	if s == nil {
+		return true // absent stss: every sample is a sync sample
+	}
+	// SampleNumbers is sorted ascending; linear scan is fine for the
+	// small tables AVIS typically uses (< 100 keyframes).
+	for _, n := range s.SampleNumbers {
+		if n == sampleIndex {
+			return true
+		}
+		if n > sampleIndex {
+			return false
+		}
+	}
+	return false
+}
+
 // Co64 is the 64-bit chunk offset box — same role as stco for large
 // files.
 type Co64 struct {

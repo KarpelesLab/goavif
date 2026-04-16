@@ -69,26 +69,46 @@ func DecodeAll(r io.Reader) ([]image.Image, []time.Duration, error) {
 
 	frames := make([]image.Image, 0, len(samples))
 	durations := make([]time.Duration, 0, len(samples))
-	for _, s := range samples {
+	sawNonSync := false
+	for i, s := range samples {
 		if uint64(s.Offset)+uint64(s.Size) > uint64(len(data)) {
 			return nil, nil, fmt.Errorf("goavif: sample offset %d+%d out of range", s.Offset, s.Size)
+		}
+		// The decoder only implements intra-only frames today. Non-
+		// sync samples require inter prediction (Phase 5+); until that
+		// lands, repeat the previous frame for non-sync and flag the
+		// situation so callers can detect degraded output.
+		if !s.IsSync && i > 0 {
+			sawNonSync = true
+			frames = append(frames, frames[len(frames)-1])
+			durations = append(durations, time.Duration(int64(s.Duration)*int64(time.Second)/int64(timescale)))
+			continue
 		}
 		sampleBytes := data[s.Offset : s.Offset+uint64(s.Size)]
 		frame, err := decoder.Decode(sampleBytes, seq)
 		if err != nil {
-			return nil, nil, fmt.Errorf("goavif: frame decode: %w", err)
+			return nil, nil, fmt.Errorf("goavif: frame %d decode: %w", i, err)
 		}
 		img, err := frameToImage(frame)
 		if err != nil {
 			return nil, nil, err
 		}
 		frames = append(frames, img)
-		// Duration in ticks → time.Duration.
 		d := time.Duration(int64(s.Duration) * int64(time.Second) / int64(timescale))
 		durations = append(durations, d)
 	}
+	if sawNonSync {
+		return frames, durations, ErrInterPredictionNotImplemented
+	}
 	return frames, durations, nil
 }
+
+// ErrInterPredictionNotImplemented is returned by DecodeAll when the
+// sample table marks a frame as a non-sync (inter-predicted) frame.
+// The intra-only decoder fills those slots by repeating the last
+// decoded frame. Callers can check with errors.Is and decide whether
+// the degraded output is acceptable.
+var ErrInterPredictionNotImplemented = fmt.Errorf("goavif: inter-predicted frames not yet implemented (Phase 5)")
 
 // decodeStill is the still-image code path used when DecodeAll is
 // handed a single-image AVIF. Mirrors Decode but returns the raw

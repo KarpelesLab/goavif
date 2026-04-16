@@ -5,11 +5,14 @@ import "fmt"
 // Sample describes one encoded image frame within an AVIF image
 // sequence. Offset is absolute within the source file; Size is the
 // frame's byte length; Duration is its presentation time delta in
-// the movie's timescale (see Mvhd.Timescale).
+// the movie's timescale (see Mvhd.Timescale); IsSync marks sync
+// samples (keyframes that can be decoded standalone). When stss is
+// absent every sample is a sync sample.
 type Sample struct {
 	Offset   uint64
 	Size     uint32
 	Duration uint32
+	IsSync   bool
 }
 
 // SampleTable walks the stts / stsc / stsz / stco+co64 trio under an
@@ -25,6 +28,7 @@ func (s *Stbl) SampleTable() ([]Sample, error) {
 		stsz *Stsz
 		stco *Stco
 		co64 *Co64
+		stss *Stss
 	)
 	for _, ch := range s.Children {
 		switch b := ch.(type) {
@@ -38,6 +42,8 @@ func (s *Stbl) SampleTable() ([]Sample, error) {
 			stco = b
 		case *Co64:
 			co64 = b
+		case *Stss:
+			stss = b
 		}
 	}
 	if stts == nil {
@@ -98,6 +104,7 @@ func (s *Stbl) SampleTable() ([]Sample, error) {
 				Offset:   off,
 				Size:     size,
 				Duration: dur,
+				IsSync:   stss.IsSync(sampleIdx + 1),
 			})
 			off += uint64(size)
 			sampleIdx++
