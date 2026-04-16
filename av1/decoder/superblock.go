@@ -308,17 +308,41 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 				fs.Y[(y+r)*fs.YStride+(x+c)] = pred[r*bw+c]
 			}
 		}
-	} else if err := td.reconstructResidual(fs, pred, x, y, bw, bh, yMode); err != nil {
+	} else if err := td.reconstructResidual(fs, pred, x, y, bw, bh, yMode, segID); err != nil {
 		return err
 	}
 
 	// Chroma: predict + (optional) residual per plane.
 	if !fs.Monochrome {
-		if err := td.decodeChromaBlock(fs, uvMode, x, y, bw, bh, skip, cflAlphaU, cflAlphaV); err != nil {
+		if err := td.decodeChromaBlock(fs, uvMode, x, y, bw, bh, skip, cflAlphaU, cflAlphaV, segID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// segmentedBaseQ returns base_q_index + segment Q offset for the given
+// segment. Returns base_q_index unchanged when segmentation is disabled
+// or the SEG_LVL_ALT_Q feature is not enabled for this segment.
+func segmentedBaseQ(td *TileDecoder, segID uint8) int {
+	base := int(td.fh.Quant.BaseQIndex)
+	if !td.fh.Segmentation.Enabled {
+		return base
+	}
+	if int(segID) >= len(td.fh.Segmentation.FeatureEnabled) {
+		return base
+	}
+	if !td.fh.Segmentation.FeatureEnabled[segID][0 /*SEG_LVL_ALT_Q*/] {
+		return base
+	}
+	q := base + int(td.fh.Segmentation.FeatureData[segID][0])
+	if q < 0 {
+		q = 0
+	}
+	if q > 255 {
+		q = 255
+	}
+	return q
 }
 
 // decodeChromaBlock predicts and reconstructs the U and V samples
@@ -328,7 +352,7 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 // For skip blocks the predicted chroma samples are the final output.
 // For non-skip blocks the coefficient decoder runs once per plane (U
 // then V) with the chroma-plane CDFs.
-func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y, bw, bh int, skip bool, cflAlphaU, cflAlphaV int) error {
+func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y, bw, bh int, skip bool, cflAlphaU, cflAlphaV int, segID uint8) error {
 	cx := x >> fs.SubX
 	cy := y >> fs.SubY
 	cw := bw >> fs.SubX
@@ -411,8 +435,11 @@ func (td *TileDecoder) decodeChromaBlock(fs *FrameState, uvMode IntraMode, x, y,
 			}
 			continue
 		}
-		// Non-skip chroma: read residual and add to prediction.
+		// Non-skip chroma: read residual and add to prediction. Base
+		// Q is taken post-segmentation so alt-Q offsets apply to chroma
+		// too.
 		if err := td.reconstructChromaResidual(dst, pred, cx, cy, cw, ch, plane,
+			segmentedBaseQ(td, segID),
 			int(td.fh.Quant.DeltaQUDc), int(td.fh.Quant.DeltaQUAc),
 			int(td.fh.Quant.DeltaQVDc), int(td.fh.Quant.DeltaQVAc),
 			fs.UVStride); err != nil {
@@ -429,6 +456,7 @@ func (td *TileDecoder) reconstructChromaResidual(
 	dst []uint8, pred []uint8,
 	cx, cy, cw, ch int,
 	plane int,
+	baseQ int,
 	duDC, duAC, dvDC, dvAC int,
 	stride int,
 ) error {
@@ -446,7 +474,7 @@ func (td *TileDecoder) reconstructChromaResidual(
 		return err
 	}
 	qParams := quant.Params{
-		BaseQIndex: int(td.fh.Quant.BaseQIndex),
+		BaseQIndex: baseQ,
 		DeltaQUDc:  duDC,
 		DeltaQUAc:  duAC,
 		DeltaQVDc:  dvDC,
@@ -480,7 +508,7 @@ func (td *TileDecoder) reconstructChromaResidual(
 // splitting) and adds it to the prediction before writing to fs.Y. It
 // supports TX_4X4 and TX_8X8 today; larger blocks return
 // ErrCoeffDecodeUnimplemented.
-func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, bw, bh int, yMode IntraMode) error {
+func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, bw, bh int, yMode IntraMode, segID uint8) error {
 	if td.coeff == nil {
 		return fmt.Errorf("%w: coeff decoder not initialized", ErrCoeffDecodeUnimplemented)
 	}
@@ -503,10 +531,9 @@ func (td *TileDecoder) reconstructResidual(fs *FrameState, pred []uint8, x, y, b
 		return err
 	}
 
-	// Dequantize using base Y params; caller should apply the correct QP
-	// once delta_q / segmentation are wired. For now, use BaseQIndex.
+	// Dequantize using base Y params plus any segmentation Q offset.
 	qParams := quant.Params{
-		BaseQIndex: int(td.fh.Quant.BaseQIndex),
+		BaseQIndex: segmentedBaseQ(td, segID),
 		DeltaQYDc:  int(td.fh.Quant.DeltaQYDc),
 		BitDepth:   int(td.sh.Color.BitDepth),
 	}
