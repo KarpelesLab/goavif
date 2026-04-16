@@ -54,16 +54,26 @@ var AC8 = [256]uint16{
 // DCLookup returns the DC dequantizer for the given bit depth, or nil if
 // the bit depth is not yet supported by this package.
 func DCLookup(bitDepth int) []uint16 {
-	if bitDepth == 8 {
+	switch bitDepth {
+	case 8:
 		return DC8[:]
+	case 10:
+		return DC10[:]
+	case 12:
+		return DC12[:]
 	}
 	return nil
 }
 
 // ACLookup returns the AC dequantizer for the given bit depth, or nil.
 func ACLookup(bitDepth int) []uint16 {
-	if bitDepth == 8 {
+	switch bitDepth {
+	case 8:
 		return AC8[:]
+	case 10:
+		return AC10[:]
+	case 12:
+		return AC12[:]
 	}
 	return nil
 }

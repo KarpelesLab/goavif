@@ -47,10 +47,28 @@ func TestComputeCrUsesVDeltas(t *testing.T) {
 	}
 }
 
-func TestUnsupportedBitDepth(t *testing.T) {
-	p := Params{BaseQIndex: 100, BitDepth: 10}
-	v := p.Compute(PlaneY)
-	if v.DC != 0 || v.AC != 0 {
-		t.Errorf("10-bit should return zero until tables are added: got %+v", v)
+func TestHDRBitDepths(t *testing.T) {
+	for _, bd := range []int{10, 12} {
+		p := Params{BaseQIndex: 100, BitDepth: bd}
+		v := p.Compute(PlaneY)
+		if v.DC == 0 || v.AC == 0 {
+			t.Errorf("%d-bit Compute returned zero: got %+v", bd, v)
+		}
+	}
+}
+
+func TestHDRTablesMonotonic(t *testing.T) {
+	// DC tables for 8/10/12-bit are all monotonically non-decreasing.
+	for name, tbl := range map[string][]uint16{
+		"DC10": DC10[:], "DC12": DC12[:],
+		"AC10": AC10[:], "AC12": AC12[:],
+	} {
+		prev := uint16(0)
+		for i, v := range tbl {
+			if v < prev {
+				t.Errorf("%s not monotonic at %d: %d < %d", name, i, v, prev)
+			}
+			prev = v
+		}
 	}
 }
