@@ -283,7 +283,13 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 // Encode writes m to w as an AVIF image using opts. Not implemented yet;
 // returns [ErrUnsupported].
 func Encode(w io.Writer, m image.Image, opts *Options) error {
-	return fmt.Errorf("%w: AV1 encoder pending", ErrUnsupported)
+	// Phase 5 is in progress. The building blocks (forward transforms,
+	// forward quantizer, OBU writer / bitio writer, entropy encoder
+	// skeleton) are landed but the full encode pipeline — tile
+	// bitstream emission via the range coder, coefficient write path,
+	// mode decision + RDO, and container assembly — is not yet wired
+	// end-to-end. Calling this function returns ErrUnsupported.
+	return fmt.Errorf("%w: AV1 encoder pending (Phase 5 partial — transforms/quant/OBU writer ready, range coder + tile bitstream not yet)", ErrUnsupported)
 }
 
 // primaryDims returns the width, height, bit depth per component, and channel

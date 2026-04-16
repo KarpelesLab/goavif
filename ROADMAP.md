@@ -202,15 +202,40 @@ Parity with the reference conformance suite.
 
 ## Phase 5 — AV1 encoder: intra-only baseline
 
-Mirror of the decoder plus minimal rate-distortion optimization.
+Mirror of the decoder plus minimal rate-distortion optimization. This
+phase is partially landed: the building blocks are in place but the
+tile-bitstream emitter needs a bit-exact AV1 range encoder, which is
+not yet working. `goavif.Encode` still returns ErrUnsupported.
 
-- [ ] Forward transforms, forward quant
-- [ ] Boolean writer + CDF-cost tables for RDO
-- [ ] OBU writer (sequence header, frame header, tile group)
-- [ ] Intra-only mode decision (Lagrangian RDO)
-- [ ] Fixed-QP control, 8-bit 4:2:0
-- [ ] Loop filter / CDEF parameter selection
-- [ ] `goavif.Encode` producing AVIF stills that decode in dav1d / libavif
+- [x] Forward transforms: FDCT4/8/16/32/64 via `fdctMatrixInverse`
+      (extracts AV1's inverse matrix Mᵢ by running IDCT on scaled
+      basis vectors, applies Mᵢᵀ·y/(N·2048)). FIdentity4/8/16/32
+      left-shift-by-1 IDTX. Round-trip tests verify ≤ N ulps error
+      per coefficient.
+- [x] Forward quantizer: `quant.QuantizeCoeff` / `QuantizeBlock`
+      apply round(raw/q) with signed rounding, inverse of the
+      existing dequantizer.
+- [x] bitio writer: `bitio.Writer` mirrors the reader — F(n), Su(n),
+      Uvlc, Leb128, Ns, TrailingBits, ByteAlign — with round-trip
+      tests covering every read path.
+- [x] OBU writer scaffolding: `obu.WriteSequenceHeader(w, h)`
+      produces a minimal reduced-still-picture-header sequence
+      header; `obu.WrapOBU` adds the OBU header + leb128 size.
+      Round-trip test confirms the output parses back to the same
+      fields.
+- [ ] Range encoder (bit-exact with our decoder): skeleton at
+      `entropy.Encoder` produces output but does not yet round-trip.
+      The straightforward match of emitted bits to decoder F(1)
+      reads needs deferred-carry handling plus proper renormalization
+      order — this is the biggest outstanding gap.
+- [ ] CDF-cost tables for RDO.
+- [ ] Frame header writer.
+- [ ] Tile group / coefficient write path.
+- [ ] Intra-only mode decision (Lagrangian RDO).
+- [ ] Fixed-QP control, 8-bit 4:2:0.
+- [ ] Loop filter / CDEF parameter selection.
+- [ ] `goavif.Encode` producing AVIF stills that decode in dav1d /
+      libavif — blocked on the range encoder.
 
 ## Phase 6 — Full AV1 encoder
 
