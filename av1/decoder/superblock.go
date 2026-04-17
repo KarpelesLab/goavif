@@ -366,6 +366,9 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 	// Inter-frame dispatch — when the tile decoder has an inter
 	// syntax reader attached, route through the inter block path.
 	if td.inter != nil {
+		if fs.BitDepth > 8 {
+			return td.decodeInterLeafBlock16(fs, x, y, bs)
+		}
 		return td.decodeInterLeafBlock(fs, x, y, bs)
 	}
 	w := bs.Width()

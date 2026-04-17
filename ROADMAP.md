@@ -471,8 +471,17 @@ Follow-ups (outside the "baseline" goal of this phase):
 - [ ] Transform / mode / partition RDO search (currently hard-coded
       DC_PRED + SPLIT + DCT_DCT everywhere)
 - [ ] Rate control (CBR / VBR / constant quality)
-- [ ] Encoder support for 10/12-bit image sequences (inter path is 8-bit
-      only today; 10/12-bit sequences fall back to intra-only keyframes)
+- [x] HBD inter encoder path: `encoder.WriteInterMETile16` mirrors
+      the 8-bit `WriteInterMETile` but operates on uint16 planes —
+      `SearchMV16` / `DiamondSearchMV16` / `SubPelRefineMV16` do ME on
+      HBD samples, and `writeInterResidualBlock16` emits MV +
+      HBD-quantized residual. HBD inter decoder path:
+      `decodeInterLeafBlock16` + `MotionCompensate16` +
+      `InterpSubPel16` run the 8-tap filter on uint16 references.
+      `EncodeAll` with `InterEnabled=true` + `BitDepth=10/12` now
+      produces AVIS sequences with 10/12-bit inter frames; 3-frame
+      gradient round-trips at center-sample drift ~1500 on 16-bit
+      scale (≈ 1.5%).
 - [ ] Optional film-grain estimation
 
 ## Phase 5 — Inter prediction (in progress)

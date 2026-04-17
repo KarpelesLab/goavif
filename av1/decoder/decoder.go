@@ -129,13 +129,6 @@ func DecodeWithRef(itemData []byte, seqHdr *obu.SequenceHeader, ref *Frame) (*Fr
 			ErrInterFrameUnsupported)
 	}
 
-	// HBD inter decode isn't on the Phase 5 path — the uint16
-	// tile decoder doesn't have the inter integration yet.
-	if !frameHdr.FrameIsIntra && int(seqHdr.Color.BitDepth) > 8 {
-		return nil, fmt.Errorf("%w: HBD inter frames not yet supported",
-			ErrInterFrameUnsupported)
-	}
-
 	// Run the tile decoder over the tile group payload.
 	bd := int(seqHdr.Color.BitDepth)
 	var fs *FrameState

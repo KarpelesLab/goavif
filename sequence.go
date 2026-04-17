@@ -154,9 +154,10 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	bitDepth := hbdBitDepth(ref, opts)
 	hbd := bitDepth > 8
 
-	// Inter prediction is only supported for 8-bit 4:2:0 color today.
-	// Fall back to the intra-only path for monochrome / HBD.
-	interEnabled := opts != nil && opts.InterEnabled && !monochrome && !hbd
+	// Inter prediction supports 8-bit 4:2:0 and 10/12-bit 4:2:0 color.
+	// Monochrome still falls back to intra-only (no HBD mono inter
+	// path wired up today).
+	interEnabled := opts != nil && opts.InterEnabled && !monochrome
 	keyInterval := 1
 	if interEnabled && opts != nil && opts.KeyFrameInterval > 1 {
 		keyInterval = opts.KeyFrameInterval
@@ -169,7 +170,7 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	switch {
 	case interEnabled:
 		seqPayload = obu.WriteSequenceHeaderAVIS(width, height, obu.SeqWriteOpts{
-			BitDepth: 8, SubsamplingX: 1, SubsamplingY: 1,
+			BitDepth: bitDepth, SubsamplingX: 1, SubsamplingY: 1,
 		})
 	case monochrome && hbd:
 		seqPayload = obu.WriteMonoSequenceHeaderHBD(width, height, bitDepth)
@@ -233,17 +234,23 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 			sampleBytes = append(append([]byte(nil), seqOBU...), frameOBU...)
 		} else {
 			// Inter: run ME against prevDec's reconstructed planes.
-			srcY, srcU, srcV := imageToYUV420(fr)
-			// Pad the coded frame dims to a 64-multiple so the
-			// inter tile writer's 64-aligned constraint is met.
-			// For now require caller-supplied dims to already be
-			// 64-aligned in inter mode.
+			// 64-aligned dims are required so the inter tile writer
+			// can emit SB-aligned partitions.
 			if width%64 != 0 || height%64 != 0 {
 				return fmt.Errorf("goavif: EncodeAll: inter mode requires 64-aligned dims, got %dx%d", width, height)
 			}
-			tilePayload, err := encoder.WriteInterMETile(width, height, interFh, sh,
-				srcY, srcU, srcV,
-				prevDec.Y, prevDec.U, prevDec.V, prevDec.Width, prevDec.Height, 8)
+			var tilePayload []byte
+			if hbd {
+				srcY, srcU, srcV := imageToYUV420_16(fr, bitDepth)
+				tilePayload, err = encoder.WriteInterMETile16(width, height, interFh, sh,
+					srcY, srcU, srcV,
+					prevDec.Y16, prevDec.U16, prevDec.V16, prevDec.Width, prevDec.Height, 8)
+			} else {
+				srcY, srcU, srcV := imageToYUV420(fr)
+				tilePayload, err = encoder.WriteInterMETile(width, height, interFh, sh,
+					srcY, srcU, srcV,
+					prevDec.Y, prevDec.U, prevDec.V, prevDec.Width, prevDec.Height, 8)
+			}
 			if err != nil {
 				return fmt.Errorf("goavif: EncodeAll: inter frame %d: %w", i, err)
 			}

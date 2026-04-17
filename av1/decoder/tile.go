@@ -35,6 +35,9 @@ type TileDecoder struct {
 	refY   []uint8       // reference luma plane for MC; nil for intra frames
 	refU   []uint8
 	refV   []uint8
+	refY16 []uint16 // HBD reference luma plane; nil for 8-bit frames
+	refU16 []uint16
+	refV16 []uint16
 	refW   int
 	refH   int
 	refYSt int
@@ -86,6 +89,9 @@ func NewTileDecoderWithRef(tileData []byte, fh *obu.FrameHeader, sh *obu.Sequenc
 		td.refY = ref.Y
 		td.refU = ref.U
 		td.refV = ref.V
+		td.refY16 = ref.Y16
+		td.refU16 = ref.U16
+		td.refV16 = ref.V16
 		td.refW = ref.Width
 		td.refH = ref.Height
 		td.refYSt = ref.YStride
