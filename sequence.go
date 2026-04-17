@@ -106,17 +106,23 @@ func DecodeAll(r io.Reader) ([]image.Image, []time.Duration, error) {
 	return frames, durations, nil
 }
 
-// ErrInterPredictionNotImplemented is returned by DecodeAll when the
-// sample table marks a frame as a non-sync (inter-predicted) frame.
-// The intra-only decoder fills those slots by repeating the last
-// decoded frame. Callers can check with errors.Is and decide whether
-// the degraded output is acceptable.
-var ErrInterPredictionNotImplemented = fmt.Errorf("goavif: inter-predicted frames not yet implemented (Phase 5)")
+// ErrInterPredictionNotImplemented is returned by DecodeAll when an
+// inter-predicted sample hits an unsupported inter mode (compound
+// prediction, warp, etc.) and the decoder falls back to repeating the
+// previous frame. The baseline single-reference translational inter
+// path is implemented; this sentinel flags the degraded case.
+var ErrInterPredictionNotImplemented = fmt.Errorf("goavif: inter prediction fallback (unsupported inter mode)")
 
 // EncodeAll writes a sequence of images to w as an AVIS image
-// sequence. Each frame is coded as a self-contained intra-only AV1
-// keyframe — there is no inter prediction, so random access is
-// perfect but compression is lower than a true video codec.
+// sequence. By default every frame is coded as a self-contained
+// intra-only AV1 keyframe — perfect random access at the cost of
+// compression.
+//
+// When opts.InterEnabled is true and the color path supports inter
+// (8/10/12-bit 4:2:0, non-monochrome), frame 0 is coded as a sync
+// keyframe and subsequent frames within opts.KeyFrameInterval are
+// coded as INTER_FRAME against the previously decoded frame. This
+// produces a real video-style compression win for correlated frames.
 //
 // delays carries per-frame presentation durations. Frames without a
 // matching delay (shorter slice) inherit 100ms. All images must

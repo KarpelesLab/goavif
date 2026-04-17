@@ -69,16 +69,15 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 // For intra-only content pass nil for ref and the function behaves
 // identically to [Decode].
 //
-// Inter-frame block decode is still landing (see ROADMAP Phase 5);
-// this entry point currently returns [ErrInterFrameUnsupported] when
-// the frame header signals an inter frame even with ref supplied,
-// but the API is exposed so DecodeAll can thread refs through as
-// the implementation matures.
+// Supports single-reference translational inter prediction
+// (NEWMV / GLOBALMV / NEAREST / NEAR reduced to zero-MV when there's
+// no ref-MV list) at 8-, 10-, and 12-bit depth. Compound prediction,
+// warped motion, and proper ref-MV list construction are follow-up
+// work; unsupported inter modes return [ErrInterFrameUnsupported].
 func DecodeWithRef(itemData []byte, seqHdr *obu.SequenceHeader, ref *Frame) (*Frame, error) {
 	if seqHdr == nil {
 		return nil, fmt.Errorf("av1/decoder: seqHdr is required")
 	}
-	_ = ref // placeholder for future inter integration
 
 	obus, err := obu.Split(itemData)
 	if err != nil {
