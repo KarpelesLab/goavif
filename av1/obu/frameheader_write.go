@@ -20,14 +20,22 @@ import "github.com/KarpelesLab/goavif/av1/bitio"
 // baseQIdx is the frame's base_q_index (0..255). A low value (e.g.,
 // 32) gives mild quantization; higher values compress harder.
 func WriteKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
-	return writeKeyFrameHeaderWith(width, height, baseQIdx, false)
+	return writeKeyFrameHeaderWith(width, height, baseQIdx, false, nil)
+}
+
+// WriteKeyFrameHeaderWithGrain is like [WriteKeyFrameHeader] but
+// appends a film_grain_params block; callers must have set
+// SeqWriteOpts.FilmGrainPresent=true when emitting the sequence
+// header, otherwise the parser ignores the block.
+func WriteKeyFrameHeaderWithGrain(width, height int, baseQIdx uint8, grain FilmGrainWriteOpts) []byte {
+	return writeKeyFrameHeaderWith(width, height, baseQIdx, false, &grain)
 }
 
 // WriteMonoKeyFrameHeader emits a keyframe header for a monochrome
 // sequence. Differs from [WriteKeyFrameHeader] only in the quantization
 // param section (no chroma delta flags per spec §5.9.12).
 func WriteMonoKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
-	return writeKeyFrameHeaderWith(width, height, baseQIdx, true)
+	return writeKeyFrameHeaderWith(width, height, baseQIdx, true, nil)
 }
 
 // WriteAVISKeyFrameHeader emits a keyframe header suitable for an
@@ -226,7 +234,7 @@ func writeInterFrameHeaderWith(width, height int, baseQIdx uint8, monochrome boo
 	return append([]byte(nil), w.Bytes()...)
 }
 
-func writeKeyFrameHeaderWith(width, height int, baseQIdx uint8, monochrome bool) []byte {
+func writeKeyFrameHeaderWith(width, height int, baseQIdx uint8, monochrome bool, grain *FilmGrainWriteOpts) []byte {
 	w := bitio.NewWriter()
 
 	// reduced_still_picture_header path:
@@ -311,8 +319,11 @@ func writeKeyFrameHeaderWith(width, height int, baseQIdx uint8, monochrome bool)
 
 	// global_motion_params: not coded for intra frames.
 
-	// film_grain_params: film_grain_params_present was 0 in seq header,
-	// reads nothing.
+	// film_grain_params: emitted only when seq has
+	// film_grain_params_present=1 (i.e. grain != nil).
+	if grain != nil {
+		WriteFilmGrainParams(w, false /* isInter */, *grain)
+	}
 
 	w.TrailingBits()
 	return append([]byte(nil), w.Bytes()...)

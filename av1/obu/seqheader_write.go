@@ -14,6 +14,10 @@ type SeqWriteOpts struct {
 	Monochrome   bool // single-plane (alpha aux or grayscale)
 	SubsamplingX int  // 0 = no subsampling, 1 = half-width. Ignored when Monochrome.
 	SubsamplingY int  // 0 = no subsampling, 1 = half-height. Ignored when Monochrome.
+	// FilmGrainPresent sets film_grain_params_present=1 in the seq
+	// header. Each frame header must then carry a film_grain_params
+	// block (see WriteFilmGrainParams).
+	FilmGrainPresent bool
 }
 
 // WriteSequenceHeader serializes a minimal AVIF-oriented sequence
@@ -202,8 +206,12 @@ func WriteSequenceHeaderFull(width, height int, opts SeqWriteOpts) []byte {
 		w.F(1, 0)
 	}
 
-	// film_grain_params_present = 0
-	w.F(1, 0)
+	// film_grain_params_present
+	if opts.FilmGrainPresent {
+		w.F(1, 1)
+	} else {
+		w.F(1, 0)
+	}
 
 	w.TrailingBits()
 	return append([]byte(nil), w.Bytes()...)
@@ -339,8 +347,12 @@ func writeSequenceHeaderAVIS(width, height int, opts SeqWriteOpts) []byte {
 	if !opts.Monochrome {
 		w.F(1, 0) // separate_uv_delta_q
 	}
-	// film_grain_params_present = 0
-	w.F(1, 0)
+	// film_grain_params_present
+	if opts.FilmGrainPresent {
+		w.F(1, 1)
+	} else {
+		w.F(1, 0)
+	}
 
 	w.TrailingBits()
 	return append([]byte(nil), w.Bytes()...)

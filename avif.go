@@ -52,6 +52,11 @@ type Options struct {
 	// result if the target can't be hit). Overrides [Options.Quality]
 	// when set. No effect on [EncodeAll] / [EncodeGrid] currently.
 	TargetBytes int
+	// FilmGrainStrength in [0, 255]. When > 0, [Encode] emits a
+	// film_grain_params block in the frame header so the decoder
+	// overlays synthetic grain on the output. 0 disables grain
+	// emission. Typical "subtle" values are 8..32.
+	FilmGrainStrength uint8
 }
 
 // ChromaSubsampling identifies a YUV chroma sampling configuration.
@@ -1267,22 +1272,43 @@ func encodeFixedQ(w io.Writer, m image.Image, opts *Options) error {
 	// opts.ChromaSubsampling and default to 4:2:0.
 	subX, subY := pickSubsampling(m, opts)
 
+	grainStrength := uint8(0)
+	if opts != nil {
+		grainStrength = opts.FilmGrainStrength
+	}
+
 	var seqPayload, framePayload []byte
 	switch {
 	case monochrome:
-		if hbd {
+		if grainStrength > 0 {
+			seqPayload = obu.WriteSequenceHeaderFull(width, height, obu.SeqWriteOpts{
+				BitDepth: bitDepth, Monochrome: true,
+				FilmGrainPresent: true,
+			})
+			framePayload = obu.WriteKeyFrameHeaderWithGrain(width, height, baseQ,
+				obu.FilmGrainWriteOpts{Seed: 0x1234, LumaStrength: grainStrength, Monochrome: true})
+			// Monochrome write path above handled both mono & hbd.
+			_ = hbd
+		} else if hbd {
 			seqPayload = obu.WriteMonoSequenceHeaderHBD(width, height, bitDepth)
+			framePayload = obu.WriteMonoKeyFrameHeader(width, height, baseQ)
 		} else {
 			seqPayload = obu.WriteMonoSequenceHeader(width, height)
+			framePayload = obu.WriteMonoKeyFrameHeader(width, height, baseQ)
 		}
-		framePayload = obu.WriteMonoKeyFrameHeader(width, height, baseQ)
 	default:
 		seqPayload = obu.WriteSequenceHeaderFull(width, height, obu.SeqWriteOpts{
-			BitDepth:     bitDepth,
-			SubsamplingX: subX,
-			SubsamplingY: subY,
+			BitDepth:         bitDepth,
+			SubsamplingX:     subX,
+			SubsamplingY:     subY,
+			FilmGrainPresent: grainStrength > 0,
 		})
-		framePayload = obu.WriteKeyFrameHeader(width, height, baseQ)
+		if grainStrength > 0 {
+			framePayload = obu.WriteKeyFrameHeaderWithGrain(width, height, baseQ,
+				obu.FilmGrainWriteOpts{Seed: 0x1234, LumaStrength: grainStrength})
+		} else {
+			framePayload = obu.WriteKeyFrameHeader(width, height, baseQ)
+		}
 	}
 	sh, err := obu.ParseSequenceHeader(seqPayload)
 	if err != nil {

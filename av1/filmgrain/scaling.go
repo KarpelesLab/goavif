@@ -53,6 +53,13 @@ func BuildLUT(points []Point) ScalingLUT {
 	for i := int(last.Value) + 1; i < 256; i++ {
 		lut[i] = last.Scale
 	}
+	// Exact-value entries: the piecewise-linear loop above covers
+	// multi-point boundaries, but with a single control point the
+	// exact value slot (e.g. lut[128] when Value=128) is never
+	// written, leaving it zero. Set it explicitly here.
+	for _, p := range points {
+		lut[p.Value] = p.Scale
+	}
 	return lut
 }
 
