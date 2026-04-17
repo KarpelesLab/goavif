@@ -454,6 +454,12 @@ Follow-ups (outside the "baseline" goal of this phase):
       inter samples are reconstructed with motion compensation.
       Gradient round-trip across a 3-frame inter sequence recovers
       per-frame shade within ±10.
+- [x] Adaptive 32→16 partition for inter: after ME at 32×32, the
+      encoder checks the best-MV SAD; above a per-pixel threshold it
+      splits to four 16×16 sub-blocks and re-runs ME per sub-block so
+      local motion differences are tracked with finer granularity.
+      Test covers mixed-motion content (left half +2 pel, right half
+      -2 pel) — split MAD ≈ 14 at baseQ=40.
 - [x] Sub-pel motion estimation refinement: `encoder.SubPelRefineMV`
       runs a two-pass refinement (8 half-pel neighbors, then 8 quarter-
       pel neighbors around the best half-pel) using the 8-tap

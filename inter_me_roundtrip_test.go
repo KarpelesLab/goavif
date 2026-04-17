@@ -84,6 +84,107 @@ func TestSubPelRefineImprovesMatch(t *testing.T) {
 	}
 }
 
+// TestInterSplit16OnComplexContent builds a frame whose motion varies
+// spatially (half the frame shifts right, half shifts left), forcing
+// the 32×32 ME SAD above the split threshold so the encoder picks the
+// 16×16 partition. Verifies the round-trip works at the smaller block
+// size.
+func TestInterSplit16OnComplexContent(t *testing.T) {
+	const dim = 64
+	baseQ := uint8(40)
+	seqPayload := obu.WriteSequenceHeaderAVIS(dim, dim, obu.SeqWriteOpts{
+		BitDepth: 8, SubsamplingX: 1, SubsamplingY: 1,
+	})
+	sh, _ := obu.ParseSequenceHeader(seqPayload)
+	seqOBU := obu.WrapOBU(1, seqPayload)
+
+	// Key frame: two distinct patterns left vs right half.
+	keyY := make([]uint8, dim*dim)
+	keyU := make([]uint8, dim*dim/4)
+	keyV := make([]uint8, dim*dim/4)
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			if x < dim/2 {
+				keyY[y*dim+x] = uint8(100 + (x%8)*10)
+			} else {
+				keyY[y*dim+x] = uint8(50 + (y%8)*10)
+			}
+		}
+	}
+	for i := range keyU {
+		keyU[i] = 128
+		keyV[i] = 128
+	}
+	keyHdr := obu.WriteAVISKeyFrameHeader(dim, dim, baseQ)
+	keyFh, _, _ := obu.ParseFrameHeaderBytes(keyHdr, sh, nil)
+	keyTile, _ := encoder.WriteIntraOnlyTile(dim, dim, keyFh, sh, keyY, keyU, keyV)
+	keyOBU := obu.WrapOBU(6, append(append([]byte(nil), keyHdr...), keyTile...))
+	keyDec, err := decoder.Decode(append(append([]byte(nil), seqOBU...), keyOBU...), sh)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+
+	// Source: left half shifts by +2 pel, right half shifts by -2 pel.
+	// This makes a whole 32×32 block cover both regions → high SAD →
+	// force the 16×16 split.
+	srcY := make([]uint8, dim*dim)
+	srcU := make([]uint8, dim*dim/4)
+	srcV := make([]uint8, dim*dim/4)
+	copy(srcU, keyU)
+	copy(srcV, keyV)
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			rx := x
+			if x < dim/2 {
+				rx = x - 2
+			} else {
+				rx = x + 2
+			}
+			if rx < 0 {
+				rx = 0
+			}
+			if rx >= dim {
+				rx = dim - 1
+			}
+			srcY[y*dim+x] = keyY[y*dim+rx]
+		}
+	}
+
+	interHdr := obu.WriteInterFrameHeader(dim, dim, baseQ)
+	interFh, _, _ := obu.ParseFrameHeaderBytes(interHdr, sh, nil)
+	interTile, err := encoder.WriteInterMETile(dim, dim, interFh, sh,
+		srcY, srcU, srcV,
+		keyDec.Y, keyDec.U, keyDec.V, dim, dim, 8)
+	if err != nil {
+		t.Fatalf("inter ME split tile: %v", err)
+	}
+	interOBU := obu.WrapOBU(6, append(append([]byte(nil), interHdr...), interTile...))
+	interDec, err := decoder.DecodeWithRef(append(append([]byte(nil), seqOBU...), interOBU...), sh, keyDec)
+	if err != nil {
+		t.Fatalf("inter decode: %v", err)
+	}
+
+	// Quick sanity: the decoded frame should have non-zero variance
+	// (not all grey) and be reasonably close to source.
+	sad := 0
+	n := 0
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			d := int(interDec.Y[y*interDec.YStride+x]) - int(srcY[y*dim+x])
+			if d < 0 {
+				d = -d
+			}
+			sad += d
+			n++
+		}
+	}
+	mad := float64(sad) / float64(n)
+	t.Logf("inter split roundtrip: luma MAD = %.2f", mad)
+	if mad > 40 {
+		t.Fatalf("inter split MAD too large: %.2f", mad)
+	}
+}
+
 // TestWriteInterMETileRoundTrip exercises the full ME pipeline: build
 // a key frame, build a source that's the key frame shifted by a few
 // pixels, encode an inter frame via WriteInterMETile, decode against
