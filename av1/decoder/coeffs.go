@@ -160,19 +160,18 @@ func (cd *CoeffDecoder) ReadEOB(numCoeffs, txSizeIdx, planeType, eobCtx int) int
 	if extra == 0 {
 		return binStart
 	}
-	// Read the first extra bit via the eob_extra CDF, the rest as
-	// uncoded bypass bits.
+	// eob_extra: first bit via the context-adapted eob_extra CDF, the
+	// remaining bits via uniform 50/50 bypass reads (matching the
+	// encoder which emits them via EncodeBool(bit, 16384)).
 	eobCoefCtx := pt - 2
 	if eobCoefCtx >= 9 {
 		eobCoefCtx = 8
 	}
 	highBit := cd.dec.DecodeSymbol(cd.eobExtraCDF[txSizeIdx][planeType][eobCoefCtx])
 	offset := highBit << (extra - 1)
-	// Remaining extra bits: uncoded bypass (read directly from the bool
-	// coder stream). For simplicity this version treats them as biased
-	// toward the bin midpoint. Full spec path would use ReadLiteral —
-	// deferred since the bypass reader isn't yet exposed.
-	offset |= (1 << (extra - 1)) >> 1
+	for b := extra - 2; b >= 0; b-- {
+		offset |= int(cd.dec.DecodeBool(16384)) << uint(b)
+	}
 	return binStart + offset
 }
 
@@ -247,6 +246,26 @@ func (cd *CoeffDecoder) ReadUniformBit() uint32 {
 	return cd.dec.DecodeBool(16384)
 }
 
+// readGolomb reads a Golomb-rice coded non-negative integer using
+// uniform 50/50 bypass bits, matching spec §9.3. The code is: a
+// prefix of N zero bits followed by a 1, then N more bits forming
+// the tail of the value; the returned integer is x-1 where x is the
+// reconstructed (1 << N)-prefixed value.
+func (cd *CoeffDecoder) readGolomb() int {
+	length := 0
+	for length < 32 {
+		if cd.dec.DecodeBool(16384) != 0 {
+			break
+		}
+		length++
+	}
+	x := 1
+	for i := 0; i < length; i++ {
+		x = (x << 1) | int(cd.dec.DecodeBool(16384))
+	}
+	return x - 1
+}
+
 // ReadCoefficients decodes a transform block's coefficients and returns
 // them in row-major layout of size w*h. numCoeffs is the "EOB bucket"
 // size (which eob_multi* CDF to use) — for TX sizes that clamp the
@@ -314,6 +333,12 @@ func (cd *CoeffDecoder) ReadCoefficients(
 				if inc < 3 {
 					break
 				}
+			}
+			// When base+BR saturates at NUM_BASE_LEVELS + COEFF_BASE_RANGE
+			// + 1 = 15, the remainder is encoded as a Golomb-rice tail
+			// (spec §6.10.6). Each call reads a non-negative integer.
+			if level >= 15 {
+				level += cd.readGolomb()
 			}
 		}
 		absLevels[pos] = int8(min3(level, 127))

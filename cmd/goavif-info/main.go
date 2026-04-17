@@ -64,6 +64,24 @@ func dumpContainer(ct *isobmff.Container) error {
 		fmt.Println("items:")
 		for _, e := range iinf.Entries {
 			fmt.Printf("  id=%d type=%s name=%q\n", e.ItemID, e.ItemType, e.ItemName)
+			// For grid-type items, decode and display the grid header
+			// and list the referenced tile IDs.
+			if e.ItemType == isobmff.TypeGridItem {
+				dumpGridDetails(ct, e.ItemID)
+			}
+		}
+	}
+
+	// Show dimg / auxl references so grid / alpha relationships are
+	// visible at a glance.
+	for _, ch := range ct.Meta.Children {
+		iref, ok := ch.(*isobmff.Iref)
+		if !ok {
+			continue
+		}
+		fmt.Println("references (iref):")
+		for _, e := range iref.Entries {
+			fmt.Printf("  %s from=%d to=%v\n", e.Type, e.FromID, e.ToIDs)
 		}
 	}
 
@@ -98,6 +116,28 @@ func dumpContainer(ct *isobmff.Container) error {
 	return nil
 }
 
+// dumpGridDetails walks the container to find and print the grid
+// item's header (rows × columns + output dimensions) plus its tile
+// references from the dimg iref.
+func dumpGridDetails(ct *isobmff.Container, gridID uint32) {
+	data, err := ct.ItemData(gridID)
+	if err != nil {
+		fmt.Printf("    grid data error: %v\n", err)
+		return
+	}
+	g, err := isobmff.ParseImageGrid(data)
+	if err != nil {
+		fmt.Printf("    grid parse error: %v\n", err)
+		return
+	}
+	fmt.Printf("    grid %dx%d tiles, output %d×%d\n",
+		g.Rows, g.Columns, g.OutputWidth, g.OutputHeight)
+	tiles := ct.FindDimgTargets(gridID)
+	if len(tiles) > 0 {
+		fmt.Printf("    tile_ids: %v\n", tiles)
+	}
+}
+
 func describeProp(p isobmff.Box) {
 	switch v := p.(type) {
 	case *isobmff.Ispe:
@@ -123,6 +163,12 @@ func describeProp(p isobmff.Box) {
 		fmt.Printf(" angle=%d*90\n", v.Angle)
 	case *isobmff.Imir:
 		fmt.Printf(" axis=%d\n", v.Axis)
+	case *isobmff.Clap:
+		fmt.Printf(" w=%d/%d h=%d/%d hoff=%d/%d voff=%d/%d\n",
+			v.CleanApertureWidthN, v.CleanApertureWidthD,
+			v.CleanApertureHeightN, v.CleanApertureHeightD,
+			v.HorizOffN, v.HorizOffD,
+			v.VertOffN, v.VertOffD)
 	default:
 		fmt.Println()
 	}

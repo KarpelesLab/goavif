@@ -19,6 +19,12 @@ type StillImage struct {
 	AV1Bitstream []byte
 	// NCLX color info; leave Type zeroed to omit.
 	NCLX *Colr
+	// Alpha fields — populated when the image has an alpha channel.
+	// Creates a second AV1 item (monochrome) linked to the primary via
+	// auxl iref + auxC alpha URN.
+	AlphaBitstream []byte
+	AlphaConfigOBUs []byte
+	AlphaBitDepth  uint8 // 8, 10 or 12; defaults to primary BitDepth when zero
 }
 
 // BuildStillImage constructs a [Container] representing a valid still-image
@@ -59,21 +65,40 @@ func BuildStillImage(s StillImage) (*Container, error) {
 		ItemID:        1,
 		ItemType:      FourCCOf("av01"),
 	}
+	infeEntries := []*Infe{infe}
+	if len(s.AlphaBitstream) > 0 {
+		infeEntries = append(infeEntries, &Infe{
+			FullBoxHeader: FullBoxHeader{Version: 2},
+			ItemID:        2,
+			ItemType:      FourCCOf("av01"),
+		})
+	}
 	iinf := &Iinf{
 		FullBoxHeader: FullBoxHeader{Version: 0},
-		Entries:       []*Infe{infe},
+		Entries:       infeEntries,
 	}
 
-	// iloc: one item, one extent; offset is mdat-relative (WriteTo rewrites).
+	// iloc: primary item + optional alpha item. Offsets are mdat-relative
+	// (WriteTo rewrites).
+	ilocItems := []IlocItem{{
+		ItemID: 1,
+		Extents: []IlocExtent{{
+			Offset: 0,
+			Length: uint64(len(s.AV1Bitstream)),
+		}},
+	}}
+	if len(s.AlphaBitstream) > 0 {
+		ilocItems = append(ilocItems, IlocItem{
+			ItemID: 2,
+			Extents: []IlocExtent{{
+				Offset: uint64(len(s.AV1Bitstream)),
+				Length: uint64(len(s.AlphaBitstream)),
+			}},
+		})
+	}
 	iloc := &Iloc{
 		FullBoxHeader: FullBoxHeader{Version: 0},
-		Items: []IlocItem{{
-			ItemID: 1,
-			Extents: []IlocExtent{{
-				Offset: 0,
-				Length: uint64(len(s.AV1Bitstream)),
-			}},
-		}},
+		Items:         ilocItems,
 	}
 	// Pick widths that accommodate both the item length and the eventual
 	// absolute mdat offset that WriteTo will add. Using 8 byte widths on
@@ -123,21 +148,92 @@ func BuildStillImage(s StillImage) (*Container, error) {
 		ipma.Entries[0].Associations = append(ipma.Entries[0].Associations,
 			IpmaAssoc{PropertyIndex: uint16(len(ipcoProps)), Essential: false})
 	}
+
+	// Alpha auxiliary item. Adds:
+	//  - ispe (same dimensions as primary) — reused via second association
+	//  - av1C for alpha — monochrome AV1 profile
+	//  - pixi for alpha — one channel
+	//  - auxC carrying the alpha URN — marks the item as alpha aux
+	//  - iref auxl(alpha → primary)
+	var iref *Iref
+	if len(s.AlphaBitstream) > 0 {
+		alphaBitDepth := s.AlphaBitDepth
+		if alphaBitDepth == 0 {
+			alphaBitDepth = s.BitDepth
+		}
+		alphaAv1c := &Av1C{
+			SeqProfile:           av1ProfileFor(alphaBitDepth, true /* mono */, 1, 1),
+			SeqLevelIdx0:         1,
+			HighBitdepth:         boolBit(alphaBitDepth >= 10),
+			TwelveBit:            boolBit(alphaBitDepth == 12),
+			Monochrome:           1,
+			ChromaSubsamplingX:   1,
+			ChromaSubsamplingY:   1,
+			ChromaSamplePosition: 0,
+			ConfigOBUs:           s.AlphaConfigOBUs,
+		}
+		alphaPixi := &Pixi{ChannelBits: []uint8{alphaBitDepth}}
+		alphaAuxC := &AuxC{AuxType: "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha"}
+
+		ipcoProps = append(ipcoProps, alphaAv1c, alphaPixi, alphaAuxC)
+		alphaAv1cIdx := uint16(len(ipcoProps) - 2)
+		alphaPixiIdx := uint16(len(ipcoProps) - 1)
+		alphaAuxCIdx := uint16(len(ipcoProps))
+
+		ipma.Entries = append(ipma.Entries, IpmaEntry{
+			ItemID: 2,
+			Associations: []IpmaAssoc{
+				{PropertyIndex: 1, Essential: false},              // ispe (shared)
+				{PropertyIndex: alphaAv1cIdx, Essential: true},    // av1C
+				{PropertyIndex: alphaPixiIdx, Essential: false},   // pixi
+				{PropertyIndex: alphaAuxCIdx, Essential: true},    // auxC
+			},
+		})
+
+		iref = &Iref{
+			FullBoxHeader: FullBoxHeader{Version: 0},
+			Entries: []IrefEntry{{
+				Type:   TypeAuxl,
+				FromID: 2,
+				ToIDs:  []uint32{1},
+			}},
+		}
+	}
+
 	ipco := &Ipco{Properties: ipcoProps}
 	iprp := &Iprp{Ipco: ipco, Ipma: []*Ipma{ipma}}
 
-	meta := &Meta{
-		FullBoxHeader: FullBoxHeader{Version: 0},
-		Children: []Box{
+	metaChildren := []Box{
+		hdlr,
+		pitm,
+		iloc,
+		iinf,
+		iprp,
+	}
+	if iref != nil {
+		// iref is conventionally placed before iprp but after iinf per
+		// HEIF; the ordering is not strictly required by the spec but
+		// matches what libavif emits.
+		metaChildren = []Box{
 			hdlr,
 			pitm,
 			iloc,
 			iinf,
+			iref,
 			iprp,
-		},
+		}
 	}
 
-	mdat := &Mdat{Data: append([]byte(nil), s.AV1Bitstream...)}
+	meta := &Meta{
+		FullBoxHeader: FullBoxHeader{Version: 0},
+		Children:      metaChildren,
+	}
+
+	mdatData := append([]byte(nil), s.AV1Bitstream...)
+	if len(s.AlphaBitstream) > 0 {
+		mdatData = append(mdatData, s.AlphaBitstream...)
+	}
+	mdat := &Mdat{Data: mdatData}
 
 	return &Container{
 		Ftyp: ft,

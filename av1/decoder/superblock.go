@@ -16,6 +16,7 @@ type ModeInfo struct {
 	Skip      bool
 	SegmentID uint8
 	Predicted bool // true once intra prediction has been applied
+	IsInter   bool // set by the inter-frame leaf-block decoder
 }
 
 // FrameState is the mutable per-frame state accumulated as the tile decoder
@@ -55,6 +56,12 @@ type FrameState struct {
 	// remain nil and the uint8 planes are used.
 	Y16      []uint16
 	U16, V16 []uint16
+
+	// RefFrame is the previously decoded frame used as the motion-
+	// compensation reference for inter blocks. Nil for key frames and
+	// intra-only decode. Populated by DecodeAll when stepping through
+	// an AVIS sequence; inter-frame decode fetches from this buffer.
+	RefFrame *FrameState
 }
 
 // NewFrameState allocates a blank 8-bit frame ready for decoding.
@@ -356,6 +363,11 @@ func vert4Size(bs BlockSize) BlockSize {
 // decodeLeafBlock decodes one coding block: reads mode symbols, and for
 // skip blocks applies intra prediction directly.
 func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) error {
+	// Inter-frame dispatch — when the tile decoder has an inter
+	// syntax reader attached, route through the inter block path.
+	if td.inter != nil {
+		return td.decodeInterLeafBlock(fs, x, y, bs)
+	}
 	w := bs.Width()
 	h := bs.Height()
 
@@ -460,28 +472,49 @@ func (td *TileDecoder) decodeLeafBlock(fs *FrameState, x, y int, bs BlockSize) e
 		return nil
 	}
 
-	// Build neighbor samples and run intra prediction.
-	above := make([]uint8, bw)
-	left := make([]uint8, bh)
+	// Build neighbor samples and run intra prediction. The basic
+	// Above/Left arrays cover the block edges (bw / bh samples). The
+	// extended pair reaches bw+bh samples on each axis so directional
+	// angles that project beyond the block corner (e.g. D45 at the
+	// bottom-right) can still source real reconstructed samples —
+	// with edge-extension fallback when the frame boundary is
+	// reached.
 	haveAbove := y > 0
 	haveLeft := x > 0
+	extLen := bw + bh
+	above := make([]uint8, bw)
+	left := make([]uint8, bh)
+	aboveExt := make([]uint8, extLen)
+	leftExt := make([]uint8, extLen)
 	if haveAbove {
-		for c := 0; c < bw; c++ {
-			above[c] = fs.Y[(y-1)*fs.YStride+(x+c)]
+		for c := 0; c < extLen; c++ {
+			sx := x + c
+			if sx >= fs.Width {
+				sx = fs.Width - 1
+			}
+			aboveExt[c] = fs.Y[(y-1)*fs.YStride+sx]
 		}
+		copy(above, aboveExt[:bw])
 	}
 	if haveLeft {
-		for r := 0; r < bh; r++ {
-			left[r] = fs.Y[(y+r)*fs.YStride+(x-1)]
+		for r := 0; r < extLen; r++ {
+			sy := y + r
+			if sy >= fs.Height {
+				sy = fs.Height - 1
+			}
+			leftExt[r] = fs.Y[sy*fs.YStride+(x-1)]
 		}
+		copy(left, leftExt[:bh])
 	}
 	pred := make([]uint8, bw*bh)
 	n := &Neighbors{
-		Above:     above,
-		Left:      left,
-		HaveAbove: haveAbove,
-		HaveLeft:  haveLeft,
-		BitDepth:  8,
+		Above:         above,
+		Left:          left,
+		AboveExtended: aboveExt,
+		LeftExtended:  leftExt,
+		HaveAbove:     haveAbove,
+		HaveLeft:      haveLeft,
+		BitDepth:      8,
 	}
 	if haveAbove && haveLeft {
 		n.AboveLeft = fs.Y[(y-1)*fs.YStride+(x-1)]

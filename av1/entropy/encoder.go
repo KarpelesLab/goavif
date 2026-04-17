@@ -26,11 +26,18 @@ type Encoder struct {
 	rng       uint64
 	shift     int
 	updateCDF bool
+
+	// scratch is a reusable big.Int kept on the encoder so the hot
+	// EncodeBool / EncodeSymbol paths can avoid allocating a new
+	// big.Int per symbol. It holds a uint64 sized addend that the
+	// caller produces.
+	scratch *big.Int
 }
 
 // Init resets the encoder state for a new tile.
 func (e *Encoder) Init(allowCDFUpdate bool) {
 	e.low = new(big.Int)
+	e.scratch = new(big.Int)
 	e.rng = SymbolRange0 // 32768
 	e.shift = 0
 	e.updateCDF = allowCDFUpdate
@@ -54,7 +61,8 @@ func (e *Encoder) EncodeBool(bit uint32, p uint32) {
 	if bit == 0 {
 		e.rng = split
 	} else {
-		e.low.Add(e.low, new(big.Int).SetUint64(split))
+		e.scratch.SetUint64(split)
+		e.low.Add(e.low, e.scratch)
 		e.rng -= split
 	}
 	e.renormalize()
@@ -95,7 +103,10 @@ func (e *Encoder) EncodeSymbol(cdf []uint16, symbol int) {
 		factor += uint64(MinProb * (N - symbol - 1))
 		newRng = r - factor
 	}
-	e.low.Add(e.low, new(big.Int).SetUint64(loAdd))
+	if loAdd != 0 {
+		e.scratch.SetUint64(loAdd)
+		e.low.Add(e.low, e.scratch)
+	}
 	e.rng = newRng
 	e.renormalize()
 	if e.updateCDF {

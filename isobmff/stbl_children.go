@@ -1,7 +1,5 @@
 package isobmff
 
-import "fmt"
-
 // Stts is the time-to-sample box (§8.6.1.2). It carries a compact
 // list of (count, delta) pairs from which per-sample presentation
 // times are reconstructed.
@@ -19,7 +17,14 @@ type SttsEntry struct {
 func (*Stts) BoxType() FourCC { return TypeStts }
 
 func (s *Stts) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Stts.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	b.buf = appendFullBoxHeader(b.buf, s.FullBoxHeader)
+	b.writeU32(uint32(len(s.Entries)))
+	for _, e := range s.Entries {
+		b.writeU32(e.Count)
+		b.writeU32(e.Delta)
+	}
+	return b.bytes(), nil
 }
 
 func ParseStts(payload []byte) (*Stts, error) {
@@ -74,7 +79,15 @@ type StscEntry struct {
 func (*Stsc) BoxType() FourCC { return TypeStsc }
 
 func (s *Stsc) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Stsc.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	b.buf = appendFullBoxHeader(b.buf, s.FullBoxHeader)
+	b.writeU32(uint32(len(s.Entries)))
+	for _, e := range s.Entries {
+		b.writeU32(e.FirstChunk)
+		b.writeU32(e.SamplesPerChunk)
+		b.writeU32(e.DescriptionIdx)
+	}
+	return b.bytes(), nil
 }
 
 func ParseStsc(payload []byte) (*Stsc, error) {
@@ -110,7 +123,16 @@ type Stsz struct {
 func (*Stsz) BoxType() FourCC { return TypeStsz }
 
 func (s *Stsz) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Stsz.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	b.buf = appendFullBoxHeader(b.buf, s.FullBoxHeader)
+	b.writeU32(s.SampleSize)
+	b.writeU32(s.SampleCount)
+	if s.SampleSize == 0 {
+		for _, sz := range s.Sizes {
+			b.writeU32(sz)
+		}
+	}
+	return b.bytes(), nil
 }
 
 func ParseStsz(payload []byte) (*Stsz, error) {
@@ -155,7 +177,13 @@ type Stco struct {
 func (*Stco) BoxType() FourCC { return TypeStco }
 
 func (s *Stco) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Stco.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	b.buf = appendFullBoxHeader(b.buf, s.FullBoxHeader)
+	b.writeU32(uint32(len(s.Offsets)))
+	for _, o := range s.Offsets {
+		b.writeU32(o)
+	}
+	return b.bytes(), nil
 }
 
 func ParseStco(payload []byte) (*Stco, error) {
@@ -189,7 +217,13 @@ type Stss struct {
 func (*Stss) BoxType() FourCC { return TypeStss }
 
 func (s *Stss) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Stss.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	b.buf = appendFullBoxHeader(b.buf, s.FullBoxHeader)
+	b.writeU32(uint32(len(s.SampleNumbers)))
+	for _, n := range s.SampleNumbers {
+		b.writeU32(n)
+	}
+	return b.bytes(), nil
 }
 
 func ParseStss(payload []byte) (*Stss, error) {
@@ -237,7 +271,13 @@ type Co64 struct {
 func (*Co64) BoxType() FourCC { return TypeCo64 }
 
 func (s *Co64) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Co64.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	b.buf = appendFullBoxHeader(b.buf, s.FullBoxHeader)
+	b.writeU32(uint32(len(s.Offsets)))
+	for _, o := range s.Offsets {
+		b.writeU64(o)
+	}
+	return b.bytes(), nil
 }
 
 func ParseCo64(payload []byte) (*Co64, error) {

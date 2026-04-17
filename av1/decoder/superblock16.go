@@ -14,27 +14,42 @@ import (
 // (predicted for skip blocks, or reconstructed residual otherwise)
 // writes back into fs.Y16.
 func (td *TileDecoder) decodeLumaBlock16(fs *FrameState, yMode IntraMode, x, y, bw, bh int, skip bool, segID uint8) error {
-	above := make([]uint16, bw)
-	left := make([]uint16, bh)
 	haveAbove := y > 0
 	haveLeft := x > 0
+	extLen := bw + bh
+	above := make([]uint16, bw)
+	left := make([]uint16, bh)
+	aboveExt := make([]uint16, extLen)
+	leftExt := make([]uint16, extLen)
 	if haveAbove {
-		for c := 0; c < bw; c++ {
-			above[c] = fs.Y16[(y-1)*fs.YStride+(x+c)]
+		for c := 0; c < extLen; c++ {
+			sx := x + c
+			if sx >= fs.Width {
+				sx = fs.Width - 1
+			}
+			aboveExt[c] = fs.Y16[(y-1)*fs.YStride+sx]
 		}
+		copy(above, aboveExt[:bw])
 	}
 	if haveLeft {
-		for r := 0; r < bh; r++ {
-			left[r] = fs.Y16[(y+r)*fs.YStride+(x-1)]
+		for r := 0; r < extLen; r++ {
+			sy := y + r
+			if sy >= fs.Height {
+				sy = fs.Height - 1
+			}
+			leftExt[r] = fs.Y16[sy*fs.YStride+(x-1)]
 		}
+		copy(left, leftExt[:bh])
 	}
 	pred := make([]uint16, bw*bh)
 	n := &Neighbors16{
-		Above:     above,
-		Left:      left,
-		HaveAbove: haveAbove,
-		HaveLeft:  haveLeft,
-		BitDepth:  fs.BitDepth,
+		Above:         above,
+		Left:          left,
+		AboveExtended: aboveExt,
+		LeftExtended:  leftExt,
+		HaveAbove:     haveAbove,
+		HaveLeft:      haveLeft,
+		BitDepth:      fs.BitDepth,
 	}
 	if haveAbove && haveLeft {
 		n.AboveLeft = fs.Y16[(y-1)*fs.YStride+(x-1)]

@@ -1,47 +1,86 @@
 package transform
 
+import "sync"
+
 // fdctMatrixInverse runs the forward N-point transform by applying
-// Miᵀ·y/(2·4096) where Mi is the integer matrix AV1's IDCT butterfly
-// implements. The matrix is extracted empirically by running the
-// inverse transform on the scaled basis vectors e_k·4096 once per
-// transform size.
+// Miᵀ·y/(N·2048) where Mi is the integer matrix AV1's IDCT butterfly
+// implements. Mi is computed by running the inverse transform on
+// scaled basis vectors e_k·2^cosBits. Per-size matrices are cached
+// globally via [miFor], eliminating the N+1 allocations that used
+// to dominate encoder profiles.
 //
 // This produces bit-exact round-trip within the rounding of halfBtf.
 // Encoders typically use a dedicated forward butterfly (libaom's
 // fdct4/8/16/...), but the matrix form is short and easy to audit.
 func fdctMatrixInverse(x []int32, inverse func([]int32), n int) {
-	// Extract Mi by running the inverse transform on basis vectors
-	// scaled by 4096 so the output fills cosPi-scale integers.
-	mi := make([][]int32, n)
-	for k := 0; k < n; k++ {
-		basis := make([]int32, n)
-		basis[k] = 1 << cosBits
-		inverse(basis)
-		mi[k] = basis // basis holds Mi[·][k] in its 4096-scaled form
-	}
+	mi := miFor(inverse, n)
 	// mi[k][i] is the coefficient of X[k] in the computation of y[i].
 	// AV1's inverse transform matrix satisfies Mi·Miᵀ = (N/2)·4096²·I
 	// (rows have constant L2 norm proportional to N). The algebraic
 	// inverse is therefore Miᵀ·(2/N)/4096, so:
 	//     X[k] = (2/N) · sum_i Mi[k][i] · y[i] / 4096
 	// which we fold into a single (>>log2(N·2048)) right-shift.
-	out := make([]int32, n)
-	shift := uint(cosBits)
 	divisor := int64(n) * int64(1<<cosBits) / 2 // = N·4096/2 = N·2048
-	_ = shift                                   // shift included in divisor
+	half := divisor / 2
+	// Overwrite x in-place via a stack-capable scratch of at most
+	// 64 int32s (we never exceed 64-point DCT).
+	var scratch [64]int32
+	out := scratch[:n]
 	for k := 0; k < n; k++ {
 		var sum int64
+		row := mi[k]
 		for i := 0; i < n; i++ {
-			sum += int64(mi[k][i]) * int64(x[i])
+			sum += int64(row[i]) * int64(x[i])
 		}
-		// Signed-round divide by divisor.
 		if sum >= 0 {
-			out[k] = int32((sum + divisor/2) / divisor)
+			out[k] = int32((sum + half) / divisor)
 		} else {
-			out[k] = int32(-((-sum + divisor/2) / divisor))
+			out[k] = int32(-((-sum + half) / divisor))
 		}
 	}
 	copy(x, out)
+}
+
+var (
+	miOnce [5]sync.Once    // 4, 8, 16, 32, 64
+	miMats [5][][]int32    // cached matrices
+)
+
+// miFor returns the precomputed Mi matrix for the given 1-D inverse.
+// Matrices are keyed by log2(n)-2 so lookup is O(1). Other N values
+// fall through to a per-call computation (none occur in practice).
+func miFor(inverse func([]int32), n int) [][]int32 {
+	idx := -1
+	switch n {
+	case 4:
+		idx = 0
+	case 8:
+		idx = 1
+	case 16:
+		idx = 2
+	case 32:
+		idx = 3
+	case 64:
+		idx = 4
+	}
+	if idx < 0 {
+		return buildMi(inverse, n)
+	}
+	miOnce[idx].Do(func() {
+		miMats[idx] = buildMi(inverse, n)
+	})
+	return miMats[idx]
+}
+
+func buildMi(inverse func([]int32), n int) [][]int32 {
+	mi := make([][]int32, n)
+	for k := 0; k < n; k++ {
+		basis := make([]int32, n)
+		basis[k] = 1 << cosBits
+		inverse(basis)
+		mi[k] = basis
+	}
+	return mi
 }
 
 // FDCT8 performs an 8-point forward DCT. Symmetric with [IDCT8].

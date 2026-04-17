@@ -1,7 +1,5 @@
 package isobmff
 
-import "fmt"
-
 // Moov is the movie box container (§8.2.1). For AVIF image sequences
 // it carries a single track with timing and per-sample offset info.
 type Moov struct {
@@ -89,7 +87,31 @@ func ParseMvhd(payload []byte) (*Mvhd, error) {
 }
 
 func (m *Mvhd) MarshalPayload() ([]byte, error) {
-	return nil, fmt.Errorf("%w: Mvhd.MarshalPayload not implemented", ErrInvalid)
+	b := newBuilder()
+	// Force version 0 (32-bit durations) for broad decoder compat.
+	fbh := m.FullBoxHeader
+	fbh.Version = 0
+	b.buf = appendFullBoxHeader(b.buf, fbh)
+	b.writeU32(uint32(m.CreationTime))
+	b.writeU32(uint32(m.ModificationTime))
+	b.writeU32(m.Timescale)
+	b.writeU32(uint32(m.Duration))
+	b.writeU32(m.Rate)
+	b.writeU16(m.Volume)
+	b.writeU16(0) // reserved
+	for i := 0; i < 2; i++ {
+		b.writeU32(0) // reserved[2]
+	}
+	// Unity display matrix (0x00010000 = 1.0 fixed).
+	matrix := [9]uint32{0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000}
+	for _, v := range matrix {
+		b.writeU32(v)
+	}
+	for i := 0; i < 6; i++ {
+		b.writeU32(0) // pre_defined[6]
+	}
+	b.writeU32(m.NextTrackID)
+	return b.bytes(), nil
 }
 
 // Trak is the track box (§8.3.1). For AVIS this is the image track.

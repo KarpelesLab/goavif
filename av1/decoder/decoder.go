@@ -16,6 +16,13 @@ import (
 // not yet been implemented for the frame's profile.
 var ErrPixelDecodeUnimplemented = errors.New("av1/decoder: pixel reconstruction not yet implemented")
 
+// ErrInterFrameUnsupported is returned by [Decode] when the frame
+// header signals an inter-predicted frame. goavif's decoder is
+// intra-only today — callers that want a best-effort playback can
+// check errors.Is and repeat the previous frame themselves, which
+// is exactly what [goavif.DecodeAll] does.
+var ErrInterFrameUnsupported = errors.New("av1/decoder: inter frame (motion compensation not implemented)")
+
 // Frame is a decoded AV1 frame. Planes are in the layout described by the
 // sequence header's color configuration: 8-bit samples occupy one byte per
 // element, 10/12-bit samples occupy two bytes per element.
@@ -54,9 +61,24 @@ type Frame struct {
 // For AVIF stills this drives the entropy + coefficient decoder over the
 // tile group payload to produce reconstructed Y/U/V pixel planes.
 func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
+	return DecodeWithRef(itemData, seqHdr, nil)
+}
+
+// DecodeWithRef is the inter-capable variant of [Decode]: it accepts
+// the previously decoded frame as a motion-compensation reference.
+// For intra-only content pass nil for ref and the function behaves
+// identically to [Decode].
+//
+// Inter-frame block decode is still landing (see ROADMAP Phase 5);
+// this entry point currently returns [ErrInterFrameUnsupported] when
+// the frame header signals an inter frame even with ref supplied,
+// but the API is exposed so DecodeAll can thread refs through as
+// the implementation matures.
+func DecodeWithRef(itemData []byte, seqHdr *obu.SequenceHeader, ref *Frame) (*Frame, error) {
 	if seqHdr == nil {
 		return nil, fmt.Errorf("av1/decoder: seqHdr is required")
 	}
+	_ = ref // placeholder for future inter integration
 
 	obus, err := obu.Split(itemData)
 	if err != nil {
@@ -99,6 +121,21 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 		return nil, fmt.Errorf("av1/decoder: no FRAME or FRAME_HEADER OBU")
 	}
 
+	// Inter frames require a reference frame. Gate early if the
+	// caller didn't supply one — without a ref the motion-
+	// compensation source is missing.
+	if !frameHdr.FrameIsIntra && ref == nil {
+		return nil, fmt.Errorf("%w: inter frame needs a reference (use DecodeWithRef)",
+			ErrInterFrameUnsupported)
+	}
+
+	// HBD inter decode isn't on the Phase 5 path — the uint16
+	// tile decoder doesn't have the inter integration yet.
+	if !frameHdr.FrameIsIntra && int(seqHdr.Color.BitDepth) > 8 {
+		return nil, fmt.Errorf("%w: HBD inter frames not yet supported",
+			ErrInterFrameUnsupported)
+	}
+
 	// Run the tile decoder over the tile group payload.
 	bd := int(seqHdr.Color.BitDepth)
 	var fs *FrameState
@@ -115,7 +152,7 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 			seqHdr.Color.Monochrome,
 		)
 	}
-	if err := runTileGroup(fs, tileGroupPayload, frameHdr, seqHdr); err != nil {
+	if err := runTileGroup(fs, tileGroupPayload, frameHdr, seqHdr, ref); err != nil {
 		return nil, err
 	}
 
@@ -146,7 +183,7 @@ func Decode(itemData []byte, seqHdr *obu.SequenceHeader) (*Frame, error) {
 // tile_start_and_end_present_flag (inferred here) + per-tile
 // tile_size_minus_1 leb128 prefixes of width TileSizeBytes (derived
 // from the frame header's TileSizeBytesMinus1).
-func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader) error {
+func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader, ref *Frame) error {
 	if len(tileData) == 0 {
 		return fmt.Errorf("av1/decoder: empty tile group payload")
 	}
@@ -170,22 +207,26 @@ func runTileGroup(fs *FrameState, tileData []byte, fh *obu.FrameHeader, sh *obu.
 	miColStarts := fh.Tile.MiColStarts
 	miRowStarts := fh.Tile.MiRowStarts
 	for t := 0; t < totalTiles; t++ {
-		td, err := NewTileDecoder(tiles[t], fh, sh)
+		td, err := NewTileDecoderWithRef(tiles[t], fh, sh, ref)
 		if err != nil {
 			return fmt.Errorf("tile %d init: %w", t, err)
 		}
 		col := t % cols
 		row := t / cols
 		var sbXStart, sbYStart, sbXEnd, sbYEnd int
+		// MiColStarts / MiRowStarts are stored in 8-pixel units by the
+		// tile_info parser (each entry = sb_index * (sbSize>>3)). Convert
+		// to pixels by multiplying by 8. This is a goavif-internal
+		// convention and differs from the AV1 spec's 4-pixel MI unit.
 		if len(miColStarts) > col+1 {
-			sbXStart = int(miColStarts[col]) * 4
-			sbXEnd = int(miColStarts[col+1]) * 4
+			sbXStart = int(miColStarts[col]) * 8
+			sbXEnd = int(miColStarts[col+1]) * 8
 		} else {
 			sbXEnd = fs.Width
 		}
 		if len(miRowStarts) > row+1 {
-			sbYStart = int(miRowStarts[row]) * 4
-			sbYEnd = int(miRowStarts[row+1]) * 4
+			sbYStart = int(miRowStarts[row]) * 8
+			sbYEnd = int(miRowStarts[row+1]) * 8
 		} else {
 			sbYEnd = fs.Height
 		}

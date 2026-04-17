@@ -64,19 +64,26 @@ func clamp16(v float64) uint16 {
 
 // ConvertPlanar420_16 converts a 10/12-bit 4:2:0 planar YUV image into
 // an interleaved 16-bit-per-channel RGBA buffer (big-endian for
-// image.RGBA64 compatibility). ySrc is w*h samples; uSrc / vSrc are
-// each (w/2)*(h/2) samples. dst must be w*h*8 bytes long.
+// image.RGBA64 compatibility).
 func ConvertPlanar420_16(dst []uint8, ySrc, uSrc, vSrc []uint16, w, h int, mc MatrixCoefficients, rng Range, bitDepth int) {
-	cw := w >> 1
+	ConvertPlanar16(dst, ySrc, uSrc, vSrc, w, h, 1, 1, mc, rng, bitDepth)
+}
+
+// ConvertPlanar16 is the generalized HBD planar-YUV → RGBA16 converter.
+// subX / subY ∈ {0, 1} pick the chroma subsampling: 4:2:0 = (1, 1),
+// 4:2:2 = (1, 0), 4:4:4 = (0, 0).
+func ConvertPlanar16(dst []uint8, ySrc, uSrc, vSrc []uint16, w, h, subX, subY int, mc MatrixCoefficients, rng Range, bitDepth int) {
+	cw := w >> subX
+	if cw < 1 {
+		cw = 1
+	}
 	for r := 0; r < h; r++ {
 		for c := 0; c < w; c++ {
 			y := ySrc[r*w+c]
-			u := uSrc[(r>>1)*cw+(c>>1)]
-			v := vSrc[(r>>1)*cw+(c>>1)]
+			u := uSrc[(r>>subY)*cw+(c>>subX)]
+			v := vSrc[(r>>subY)*cw+(c>>subX)]
 			rr, gg, bb := YUVToRGB16(y, u, v, mc, rng, bitDepth)
 			i := (r*w + c) * 8
-			// Big-endian 16-bit per channel, R G B A — matches
-			// image.RGBA64's Pix layout (stdlib std).
 			dst[i+0] = uint8(rr >> 8)
 			dst[i+1] = uint8(rr & 0xFF)
 			dst[i+2] = uint8(gg >> 8)

@@ -13,18 +13,25 @@ import (
 // coeffs is the quantized coefficient array in row-major layout (w*h).
 // scan maps scan-position indices to block positions. nzMapOffset is
 // the per-position context offset table. txSizeIdx and planeType
-// (0=luma, 1=chroma) select CDF families.
+// (0=luma, 1=chroma) select CDF families. qCtx is the 4-way token Q
+// context derived from base_q_index per spec §7.12.4 — it must match
+// the value passed to [decoder.InitCoeffDecoder] for round-trip.
 //
 // If all coefficients are zero, txb_skip=1 is emitted and nothing
 // else follows. Otherwise the full level + sign syntax is emitted.
 func WriteCoefficients(
 	enc *entropy.Encoder,
 	coeffs []int32,
-	txSizeIdx, planeType int,
+	txSizeIdx, planeType, qCtx int,
 	scan []int,
 	nzMapOffset []int8,
 	w, h int,
 ) {
+	if qCtx < 0 {
+		qCtx = 0
+	} else if qCtx > 3 {
+		qCtx = 3
+	}
 	// Determine EOB: the 1-based index (in scan order) of the last
 	// non-zero coefficient.
 	eob := 0
@@ -36,8 +43,10 @@ func WriteCoefficients(
 		}
 	}
 
-	// txb_skip CDF.
-	txbSkipCDF := append(cdfs.CDF(nil), cdfs.DefaultTxbSkipCDF[clamp(txSizeIdx, 0, 4)][0]...)
+	// txb_skip CDF. These default CDFs are safe to share across encodes
+	// because our encoder runs with updateCDF=false (the frame header
+	// sets disable_cdf_update=1), so EncodeSymbol never mutates them.
+	txbSkipCDF := cdfs.DefaultTxbSkipCDF[clamp(txSizeIdx, 0, 4)][0]
 	if eob == 0 {
 		enc.EncodeSymbol(txbSkipCDF, 1) // skip = true
 		return
@@ -45,7 +54,7 @@ func WriteCoefficients(
 	enc.EncodeSymbol(txbSkipCDF, 0) // skip = false
 
 	// EOB: encode eob_pt + optional eob_extra.
-	writeEOB(enc, eob, len(scan), txSizeIdx, planeType)
+	writeEOB(enc, eob, len(scan), txSizeIdx, planeType, qCtx)
 
 	// Levels in REVERSE scan order (from eob-1 down to 0).
 	absLevels := make([]int8, w*h)
@@ -73,8 +82,7 @@ func WriteCoefficients(
 			if baseSymbol < 0 {
 				baseSymbol = 0
 			}
-			cdf := append(cdfs.CDF(nil),
-				cdfs.DefaultCoeffBaseEOBMultiCDF[clamp(txSizeIdx, 0, 4)][planeType][clamp(eobBaseCtx, 0, 3)]...)
+			cdf := cdfs.DefaultCoeffBaseEOBMultiCDF[clamp(txSizeIdx, 0, 4)][planeType][clamp(eobBaseCtx, 0, 3)]
 			enc.EncodeSymbol(cdf, baseSymbol)
 		} else {
 			// Non-EOB: emit base level via coeff_base_multi.
@@ -83,8 +91,7 @@ func WriteCoefficients(
 			if baseSymbol > 3 {
 				baseSymbol = 3
 			}
-			cdf := append(cdfs.CDF(nil),
-				cdfs.DefaultCoeffBaseMultiCDF[0][clamp(txSizeIdx, 0, 4)][planeType][clamp(sigCtx, 0, 41)]...)
+			cdf := cdfs.DefaultCoeffBaseMultiCDF[qCtx][clamp(txSizeIdx, 0, 4)][planeType][clamp(sigCtx, 0, 41)]
 			enc.EncodeSymbol(cdf, baseSymbol)
 		}
 
@@ -103,19 +110,27 @@ func WriteCoefficients(
 		}
 		if baseForBR == 3 {
 			remaining := effLevel - 3
+			brSent := 0
 			for br := 0; br < 4; br++ {
 				brCtx := decoder.LevelCtx(r, c, w, h, absLevels)
 				inc := remaining
 				if inc > 3 {
 					inc = 3
 				}
-				cdf := append(cdfs.CDF(nil),
-					cdfs.DefaultCoeffBrMultiCDF[0][clamp(txSizeIdx, 0, 4)][planeType][clamp(brCtx, 0, 20)]...)
+				cdf := cdfs.DefaultCoeffBrMultiCDF[qCtx][clamp(txSizeIdx, 0, 4)][planeType][clamp(brCtx, 0, 20)]
 				enc.EncodeSymbol(cdf, inc)
 				remaining -= inc
+				brSent += inc
 				if inc < 3 {
 					break
 				}
+			}
+			// If base+BR saturated at NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1
+			// (= 15 total: 3 from base + 12 from 4 BR symbols each =3), emit
+			// the Golomb-rice tail so the decoder can recover the full
+			// magnitude. `brSent == 12` means every BR symbol was 3.
+			if brSent == 12 && effLevel >= 15 {
+				writeGolomb(enc, effLevel-15)
 			}
 		}
 
@@ -128,7 +143,7 @@ func WriteCoefficients(
 		if coeffs[0] < 0 {
 			sign = 1
 		}
-		dcCDF := append(cdfs.CDF(nil), cdfs.DefaultDCSignCDF[planeType][0]...)
+		dcCDF := cdfs.DefaultDCSignCDF[planeType][0]
 		enc.EncodeSymbol(dcCDF, sign)
 	}
 	for i := 1; i < eob; i++ {
@@ -169,25 +184,27 @@ func clamp(v, lo, hi int) int {
 
 // writeEOB emits the eob_pt symbol + optional eob_extra bits for the
 // given 1-based eob position. Mirrors ReadEOB in coeffs.go.
-func writeEOB(enc *entropy.Encoder, eob, numCoeffs, txSizeIdx, planeType int) {
+func writeEOB(enc *entropy.Encoder, eob, numCoeffs, txSizeIdx, planeType, qCtx int) {
 	pt, extra := eobToEOBPt(eob)
-	// EOB multi CDF: select by numCoeffs bucket.
+	// EOB multi CDF: select by numCoeffs bucket. Defaults are read-only
+	// under our encoder's updateCDF=false setting, so we pass them by
+	// reference.
 	var cdf cdfs.CDF
 	switch {
 	case numCoeffs <= 16:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti16CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti16CDF[qCtx][planeType][0]
 	case numCoeffs <= 32:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti32CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti32CDF[qCtx][planeType][0]
 	case numCoeffs <= 64:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti64CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti64CDF[qCtx][planeType][0]
 	case numCoeffs <= 128:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti128CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti128CDF[qCtx][planeType][0]
 	case numCoeffs <= 256:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti256CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti256CDF[qCtx][planeType][0]
 	case numCoeffs <= 512:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti512CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti512CDF[qCtx][planeType][0]
 	default:
-		cdf = append(cdfs.CDF(nil), cdfs.DefaultEOBMulti1024CDF[0][planeType][0]...)
+		cdf = cdfs.DefaultEOBMulti1024CDF[qCtx][planeType][0]
 	}
 	enc.EncodeSymbol(cdf, pt)
 
@@ -195,19 +212,41 @@ func writeEOB(enc *entropy.Encoder, eob, numCoeffs, txSizeIdx, planeType int) {
 		return
 	}
 	// eob_extra: first bit from CDF, rest as bypass.
-	_, binStart := decoder.EOBPtToEOB(pt)
+	binStart, _ := decoder.EOBPtToEOB(pt)
 	offset := eob - binStart
 	highBit := (offset >> (extra - 1)) & 1
 	eobCoefCtx := pt - 2
 	if eobCoefCtx >= 9 {
 		eobCoefCtx = 8
 	}
-	extraCDF := append(cdfs.CDF(nil),
-		cdfs.DefaultEOBExtraCDF[0][clamp(txSizeIdx, 0, 4)][planeType][clamp(eobCoefCtx, 0, 8)]...)
+	extraCDF := cdfs.DefaultEOBExtraCDF[qCtx][clamp(txSizeIdx, 0, 4)][planeType][clamp(eobCoefCtx, 0, 8)]
 	enc.EncodeSymbol(extraCDF, highBit)
 	// Remaining extra bits: bypass.
 	for b := extra - 2; b >= 0; b-- {
 		enc.EncodeBool(uint32((offset>>uint(b))&1), 16384)
+	}
+}
+
+// writeGolomb emits a non-negative integer as a Golomb-rice code
+// consumed by decoder.readGolomb: x = value + 1, N = floor(log2(x)),
+// then N zeros, a 1, and the low N bits of x MSB-first.
+func writeGolomb(enc *entropy.Encoder, value int) {
+	if value < 0 {
+		value = 0
+	}
+	x := value + 1
+	length := 0
+	for tmp := x >> 1; tmp > 0; tmp >>= 1 {
+		length++
+	}
+	// Emit `length` zeros then a terminating 1.
+	for i := 0; i < length; i++ {
+		enc.EncodeBool(0, 16384)
+	}
+	enc.EncodeBool(1, 16384)
+	// Emit the low `length` bits of x MSB-first.
+	for i := length - 1; i >= 0; i-- {
+		enc.EncodeBool(uint32((x>>uint(i))&1), 16384)
 	}
 }
 

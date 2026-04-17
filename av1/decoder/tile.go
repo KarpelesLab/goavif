@@ -31,6 +31,14 @@ type TileDecoder struct {
 	sh     *obu.SequenceHeader
 	sbSize int
 	coeff  *CoeffDecoder
+	inter  *InterDecoder // non-nil only when decoding an inter frame
+	refY   []uint8       // reference luma plane for MC; nil for intra frames
+	refU   []uint8
+	refV   []uint8
+	refW   int
+	refH   int
+	refYSt int
+	refCSt int
 
 	// CDFs — mutable copies for per-tile adaptation.
 	partitionCDF  [20]cdfs.CDF
@@ -45,6 +53,13 @@ type TileDecoder struct {
 
 // NewTileDecoder initializes a tile decoder for the given tile data.
 func NewTileDecoder(tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader) (*TileDecoder, error) {
+	return NewTileDecoderWithRef(tileData, fh, sh, nil)
+}
+
+// NewTileDecoderWithRef is the inter-aware form of [NewTileDecoder].
+// For inter frames, ref provides the previously decoded frame used as
+// the motion-compensation source. Pass nil for intra-only frames.
+func NewTileDecoderWithRef(tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader, ref *Frame) (*TileDecoder, error) {
 	td := &TileDecoder{
 		fh: fh,
 		sh: sh,
@@ -62,6 +77,20 @@ func NewTileDecoder(tileData []byte, fh *obu.FrameHeader, sh *obu.SequenceHeader
 	// Derive Q context from the frame's base_q_index (spec §7.12.4).
 	qCtx := qIndexToCtx(int(fh.Quant.BaseQIndex))
 	td.coeff = InitCoeffDecoder(&td.dec, qCtx)
+	// Inter-frame state: hook up MC refs and instantiate the inter
+	// block-syntax reader. We only support integer-pel MVs today so
+	// allow_high_precision_mv is held at false; sub-pel MVs fire
+	// the 8-tap filter but not the 1/8-pel hp bits.
+	if !fh.FrameIsIntra && ref != nil {
+		td.inter = NewInterDecoder(&td.dec, false)
+		td.refY = ref.Y
+		td.refU = ref.U
+		td.refV = ref.V
+		td.refW = ref.Width
+		td.refH = ref.Height
+		td.refYSt = ref.YStride
+		td.refCSt = ref.CStride
+	}
 	return td, nil
 }
 

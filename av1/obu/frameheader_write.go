@@ -20,6 +20,191 @@ import "github.com/KarpelesLab/goavif/av1/bitio"
 // baseQIdx is the frame's base_q_index (0..255). A low value (e.g.,
 // 32) gives mild quantization; higher values compress harder.
 func WriteKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
+	return writeKeyFrameHeaderWith(width, height, baseQIdx, false)
+}
+
+// WriteMonoKeyFrameHeader emits a keyframe header for a monochrome
+// sequence. Differs from [WriteKeyFrameHeader] only in the quantization
+// param section (no chroma delta flags per spec §5.9.12).
+func WriteMonoKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
+	return writeKeyFrameHeaderWith(width, height, baseQIdx, true)
+}
+
+// WriteAVISKeyFrameHeader emits a keyframe header suitable for an
+// AVIS sequence that pairs with [WriteSequenceHeaderAVIS]. Differs
+// from [WriteKeyFrameHeader] in that it follows the non-reduced
+// bit sequence: show_existing_frame is coded, the error_resilient
+// bit is implicit rather than coded, screen-content + frame-size-
+// override bits are present, and iref-less refresh_frame_flags are
+// inferred rather than coded.
+func WriteAVISKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
+	w := bitio.NewWriter()
+
+	// show_existing_frame = 0
+	w.F(1, 0)
+	// frame_type = 0 (KEY_FRAME)
+	w.F(2, 0)
+	// show_frame = 1
+	w.F(1, 1)
+	// error_resilient_mode: NOT coded for KeyFrame+ShowFrame (implicit true).
+
+	// disable_cdf_update = 1
+	w.F(1, 1)
+	// allow_screen_content_tools (1) = 0 (seq SELECT)
+	w.F(1, 0)
+	// force_integer_mv not coded (allow_screen=0).
+
+	// current_frame_id: FrameIDNumbersPresentFlag=0 → not coded.
+	// frame_size_override (1) = 0
+	w.F(1, 0)
+	// order_hint bits not coded (disable in seq).
+	// primary_ref_frame: KeyFrame → PRIMARY_REF_NONE, not coded.
+	// refresh_frame_flags: KeyFrame+ShowFrame → all refs, not coded.
+	// ref_order_hint loop: KeyFrame + refresh=allFrames → skipped.
+
+	// Frame size + render size.
+	// render_and_frame_size_different (1) = 0
+	w.F(1, 0)
+	// allow_intrabc: allow_screen=0 → not coded.
+
+	// disable_frame_end_update_cdf (1) = 1
+	w.F(1, 1)
+
+	// Tile info.
+	writeTileInfoSingle(w, width, height)
+	// Quant / seg / delta_q / loop filter.
+	writeQuantParams(w, baseQIdx, false)
+	// segmentation_enabled = 0
+	w.F(1, 0)
+	if baseQIdx > 0 {
+		w.F(1, 0) // delta_q_present = 0
+	}
+	lossless := baseQIdx == 0
+	if !lossless {
+		writeLoopFilterParams(w, false)
+	}
+	// cdef / lr skipped.
+	if !lossless {
+		w.F(1, 0) // tx_mode = LARGEST
+	}
+	// frame_reference_mode / skip_mode / global_motion NOT coded for
+	// intra frames.
+	// reduced_tx_set (1) = 0
+	w.F(1, 0)
+	// film_grain NOT coded (seq flag = 0).
+	w.TrailingBits()
+	return append([]byte(nil), w.Bytes()...)
+}
+
+// WriteInterFrameHeader emits a non-reduced uncompressed_header for
+// an inter frame following an AVIS-form sequence header produced by
+// [WriteSequenceHeaderAVIS]. The frame:
+//
+//   - is FrameType=INTER_FRAME, show_frame=true, error_resilient_mode=true
+//   - refreshes every reference slot (refresh_frame_flags=0xFF)
+//   - points every ref slot at reference buffer 0 (LAST = 0)
+//   - picks InterpolationFilter=REGULAR (no switchable)
+//   - has no global motion (IDENTITY for every ref)
+//   - disables skip_mode / reference_select (single reference)
+//
+// baseQIdx sets base_q_index.
+func WriteInterFrameHeader(width, height int, baseQIdx uint8) []byte {
+	w := bitio.NewWriter()
+
+	// show_existing_frame = 0
+	w.F(1, 0)
+	// frame_type = 1 (INTER_FRAME)
+	w.F(2, 1)
+	// show_frame = 1
+	w.F(1, 1)
+	// error_resilient_mode = 1
+	w.F(1, 1)
+
+	// disable_cdf_update = 1
+	w.F(1, 1)
+	// seq_force_screen_content_tools = SELECT, so allow_screen_content (1 bit)
+	w.F(1, 0) // no screen content
+	// force_integer_mv not coded when allow_screen=0.
+
+	// frame_size_override = 0
+	w.F(1, 0)
+	// order_hint bits not coded (enable_order_hint=0)
+	// primary_ref_frame: not coded because error_resilient_mode=1
+	// refresh_frame_flags (8) = 0xFF
+	w.F(8, 0xFF)
+	// ref_order_hint loop: only coded if ErrorResilientMode &&
+	// EnableOrderHint. EnableOrderHint=0 → skip.
+
+	// Inter branch.
+	// frame_refs_short_signaling: only if enable_order_hint. Skip.
+	for i := 0; i < 7; i++ {
+		w.F(3, 0) // ref_frame_idx[i] = 0 (all point at buffer 0)
+	}
+	// frame_id deltas skipped (FrameIDNumbersPresentFlag=0)
+	// frame_size_override=0 → render_and_frame_size_different (1) = 0
+	w.F(1, 0)
+	// allow_high_precision_mv (1) = 0 (ForceIntegerMV=false since no screen content)
+	w.F(1, 0)
+	// is_filter_switchable (1) = 0 → non-switchable, emit 2 bits for REGULAR.
+	w.F(1, 0)
+	w.F(2, 0) // InterpolationFilter = REGULAR
+	// is_motion_mode_switchable (1) = 0
+	w.F(1, 0)
+	// use_ref_frame_mvs: not coded since enable_order_hint=0.
+
+	// disable_frame_end_update_cdf (1) = 1
+	w.F(1, 1)
+
+	// Tile info.
+	writeTileInfoSingle(w, width, height)
+
+	// Quant params.
+	writeQuantParams(w, baseQIdx, false)
+
+	// segmentation_enabled (1) = 0
+	w.F(1, 0)
+
+	// delta_q_params.
+	if baseQIdx > 0 {
+		w.F(1, 0) // delta_q_present = 0
+	}
+	// delta_lf_params skipped (delta_q_present=0).
+
+	// Loop filter params — skipped when lossless; we set all zero.
+	lossless := baseQIdx == 0
+	if !lossless {
+		writeLoopFilterParams(w, false)
+	}
+
+	// CDEF / LR params: seq disables both → nothing coded.
+
+	// tx_mode (1 bit unless lossless)
+	if !lossless {
+		w.F(1, 0) // tx_mode = TxModeLargest
+	}
+
+	// frame_reference_mode: reference_select (1) = 0 (single ref).
+	w.F(1, 0)
+
+	// skip_mode_params: skip_mode_allowed is false (no order_hint →
+	// no forward/backward ref derivation), so nothing coded.
+
+	// reduced_tx_set (1) = 0
+	w.F(1, 0)
+
+	// global_motion_params: for each of 7 refs, is_global (1) = 0 so
+	// the ref stays IDENTITY; no further bits for IDENTITY.
+	for i := 0; i < 7; i++ {
+		w.F(1, 0)
+	}
+
+	// film_grain_params: seq.FilmGrainParamsPresent=0 → skipped.
+
+	w.TrailingBits()
+	return append([]byte(nil), w.Bytes()...)
+}
+
+func writeKeyFrameHeaderWith(width, height int, baseQIdx uint8, monochrome bool) []byte {
 	w := bitio.NewWriter()
 
 	// reduced_still_picture_header path:
@@ -68,7 +253,7 @@ func WriteKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 	writeTileInfoSingle(w, width, height)
 
 	// Quantization.
-	writeQuantParams(w, baseQIdx)
+	writeQuantParams(w, baseQIdx, monochrome)
 
 	// Segmentation params: segmentation_enabled (1 bit) + depending on value
 	// further fields. For a simple encoder set all to 0.
@@ -83,7 +268,7 @@ func WriteKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 	// LoopFilter params — skipped when CodedLossless is true (all Q = 0).
 	lossless := baseQIdx == 0
 	if !lossless {
-		writeLoopFilterParams(w)
+		writeLoopFilterParams(w, monochrome)
 	}
 
 	// CDEF: enable_cdef was 0 in seq header, so this reads nothing.
@@ -150,27 +335,31 @@ func writeTileInfoSingle(w *bitio.Writer, width, height int) {
 	// tile_size_bytes fields are coded.
 }
 
-// writeQuantParams writes quantization_params().
-func writeQuantParams(w *bitio.Writer, baseQIdx uint8) {
+// writeQuantParams writes quantization_params(). When monochrome is
+// true, the chroma delta-Q flags are skipped per spec §5.9.12, matching
+// the parser's NumPlanes>1 gate.
+func writeQuantParams(w *bitio.Writer, baseQIdx uint8, monochrome bool) {
 	// base_q_idx (8 bits)
 	w.F(8, uint32(baseQIdx))
-	// diff_uv_delta = 0 in reduced mode — wait no, this depends on color
-	// config. With SeparateUVDeltaQ=0 (which is our default), no extra
-	// bits are coded here.
-	// DeltaQYDc: 1-bit flag + su(6) if set. Set 0.
-	w.F(1, 0) // delta_q_y_dc_flag = 0
-	// DeltaQUDc: 1-bit flag. Set 0.
+	// DeltaQYDc: 1-bit flag. Set 0.
 	w.F(1, 0)
-	// DeltaQUAc: 1-bit flag. Set 0.
-	w.F(1, 0)
-	// Note: DeltaQVDc/DeltaQVAc coded only when SeparateUVDeltaQ=1.
+	if !monochrome {
+		// DeltaQUDc: 1-bit flag. Set 0.
+		w.F(1, 0)
+		// DeltaQUAc: 1-bit flag. Set 0.
+		w.F(1, 0)
+		// Note: DeltaQVDc/DeltaQVAc coded only when SeparateUVDeltaQ=1.
+	}
 	// using_qmatrix = 0
 	w.F(1, 0)
 }
 
 // writeLoopFilterParams writes loop_filter_params(). For our minimal
-// encoder all filter levels are 0 (filter disabled).
-func writeLoopFilterParams(w *bitio.Writer) {
+// encoder all filter levels are 0 (filter disabled). The monochrome
+// argument is accepted for symmetry with the parser, but since filter
+// levels are all zero, LevelU/V would be skipped in either branch.
+func writeLoopFilterParams(w *bitio.Writer, monochrome bool) {
+	_ = monochrome
 	// filter_level[0], filter_level[1] (6 bits each)
 	w.F(6, 0)
 	w.F(6, 0)

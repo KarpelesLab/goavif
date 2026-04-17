@@ -260,16 +260,279 @@ Follow-ups (outside the "baseline" goal of this phase):
       imageToYUV420 converts input images to BT.601 Y/Cb/Cr planes
       with 2×2 box subsampling. Decoded center-Y for a white image
       goes from 128 (old skip-only) to ~200 (now tracks input).
-- [ ] Full-spectrum coefficient encoding (multi-position AC)
+- [x] Full-spectrum coefficient encoding (multi-position AC):
+      transform.Forward2D (DctDct + IDTX) covers 4/8/16/32/64-point
+      row + column passes with round-trip parity vs Inverse2D.
+      encoder.WriteIntraOnlyTile computes the 2D spatial residual
+      against reconstructed-neighbor DC_PRED, forward-transforms at
+      the block's TX size, zeros out positions outside the clamped
+      scan region (TX_64×*), quantizes all coefficients, and emits
+      them via WriteCoefficients. The encoder maintains its own
+      reconstructed luma / chroma buffers so neighbor samples for
+      the next block match what the decoder will reconstruct.
+      Gradient + two-halves round-trip tests confirm AC harmonics
+      reach the decoder. Fixed two bugs along the way:
+      (1) decoder's ReadEOB elided the eob_extra low bits (replaced
+      a fixed bias with real DecodeBool(16384) reads);
+      (2) encoder's writeEOB swapped the EOBPtToEOB return values,
+      treating extraBits as binStart;
+      (3) decoder's runTileGroup mixed 8-pixel tile_info MI units
+      with a 4-pixel multiplier, cutting every multi-SB frame's
+      decode region in half.
+- [x] Encoder support for alpha: opts.Alpha (or an input image with
+      non-opaque pixels) triggers a second monochrome AV1 auxiliary
+      item. obu.WriteMonoSequenceHeader + WriteMonoKeyFrameHeader emit
+      the single-plane variants; isobmff.BuildStillImage adds the
+      second infe + iloc extent, and registers an auxC box with the
+      alpha URN plus an auxl iref from the alpha item to the primary.
+      Gradient alpha round-trips: source 0..255 decodes to 10..234 at
+      quality=90. Fixed one bug: WriteKeyFrameHeader's
+      writeQuantParams / writeLoopFilterParams unconditionally emitted
+      chroma delta flags — the parser's monochrome branch skips them,
+      so the alpha frame header's bit-count went out of sync and the
+      trailing bit check failed.
+- [x] PARTITION_SPLIT at 64×64 → four 32×32 leaf blocks. The previous
+      encoder used PARTITION_NONE at 64×64 → TX_64×64 with a clamped
+      scan that dropped every coefficient outside the top-left 32×32
+      subregion, flattening any high-frequency detail. Splitting
+      yields four 32×32 TX blocks with full default-scan coefficient
+      coverage. writeIntraTxTypeIfNeeded emits the required ext_tx
+      symbol (DCT_DCT = raw 0) for TX sizes ≤ 32×32 per
+      spec §6.10.15. A fine 64×64 checkerboard round-trips with row
+      variance ≈ 10325 at quality=95 (near the theoretical maximum),
+      where the previous encoder collapsed it to a uniform grey.
+- [x] Intra mode search: encoder tracks mode info per 4×4 MI cell,
+      computes above/left buckets (modeBucket mirroring the decoder),
+      and for each 32×32 block picks the lowest-SAD mode among
+      DC / V / H / Paeth / Smooth / SmoothV / SmoothH (directional
+      modes still TODO — need extended-neighbor plumbing). Y mode is
+      emitted via the context-dependent kfYModeCDF and UV mode via
+      uvModeCDF[1][yMode], matching what the decoder reads.
+- [x] Adaptive 32→16 partition split via highDetail32: when a 32×32
+      block's best-mode SAD after the intra-mode search yields a mean
+      absolute deviation > 20, the encoder emits PARTITION_SPLIT at
+      the 32×32 level and codes four 16×16 leaves. Each 16×16 block
+      uses TX_16×16 with txSet=1 (7 types) for tx_type signaling. For
+      flat or gently graded regions we stay at 32×32 (no regression);
+      for directional-bar and complex-texture content the finer
+      partition cleanly preserves structure — 16×16 vertical bars
+      round-trip to 55/186 vs source 59/188 (was 95/77 at 32×32).
+- [x] Monochrome (grayscale) primary encoding. When the input is
+      image.Gray or image.Gray16, goavif.Encode routes through the
+      mono sequence/frame headers (already built for alpha) and
+      passes nil chroma to WriteIntraOnlyTile. The container ends up
+      with monochrome=1 in av1C and a 1-channel pixi; no chroma
+      bitstream is coded. Gray gradient round-trips 0..255 → 20..233
+      at quality=90 (matching the luma path of the color encoder).
+- [x] AVIF grid image encode. goavif.EncodeGrid takes a slice of
+      equal-dimension tile images + rows/cols + output dimensions
+      and writes an AVIF container whose primary item is a
+      "grid"-type derived image. isobmff.BuildGrid wires up the
+      infe/iloc/iref/ipma plumbing: grid item with the 6/10-byte
+      payload, one av01 item per tile (marked hidden), dimg iref
+      listing tiles in raster order, shared av1C/pixi across tiles.
+      2×2 round-trip preserves per-quadrant shade within quantizer
+      drift (50/100/150/200 → 55/99/143/186 at q=90).
+- [x] clap (clean-aperture) crop transform on decode. The primary
+      item's Clap property is evaluated against the coded image:
+      crop width / height / horizontal-offset / vertical-offset
+      rationals compute a centered rectangle that becomes the
+      returned sub-image. Applied between ispe cropping and
+      irot/imir per HEIF §6.5.10's canonical order.
+- [x] AVIF grid image decode. Primary items with ItemType "grid"
+      now route through decodeGridPrimary: ParseImageGrid decodes
+      the 6/10-byte grid payload (version, flags, rows_minus_one,
+      columns_minus_one, output_width/height as 16 or 32 bits per
+      flags bit 0); FindDimgTargets walks the `dimg` iref to
+      enumerate tile item IDs; each tile is decoded through the
+      single-item path and pasted into an output canvas clipped to
+      output_width × output_height. This is the format Apple uses
+      for iPhone HEIC/AVIF photos. ispe cropping and irot/imir
+      transforms still apply via the shared post-transform pass.
+- [x] irot / imir transform application on decode. Decode walks iprp
+      for Irot / Imir properties associated with the primary item
+      and applies them to the decoded image: Irot.Angle (0..3) picks
+      how many 90° CCW rotations to apply; Imir.Axis selects
+      horizontal (Axis=1) vs vertical (Axis=0) flip, applied in
+      iprp association order. Helpers rotate90CCW / mirror verified
+      by unit tests.
+- [x] Directional intra with extended neighbors. decodeLeafBlock /
+      decodeLumaBlock16 now build bw+bh-length above/left arrays
+      alongside the shorter bw/bh ones, with edge-extension when the
+      frame boundary is reached. encoder.buildNeighbors /
+      buildNeighbors16 mirror the setup. Neighbors / Neighbors16's
+      AboveExtended / LeftExtended fields are populated on every
+      block so predict.DirectionalPred and its uint16 counterpart
+      can project angles across the full block without clamping at
+      the block edge. Encoder's intra-mode search adds D45 / D67 /
+      D113 / D135 / D157 / D203 candidates when both neighbors are
+      available. Round-trip tests pass with only minor variance
+      change on a synthetic checkerboard (10589 → 9896 at q=95).
+- [x] 4:2:2 and 4:4:4 chroma encoding + HBD chroma generalization.
+      obu.WriteSequenceHeaderFull emits sequence headers at profile 0
+      (4:2:0), profile 1 (4:4:4), or profile 2 (4:2:2 / 12-bit),
+      picking the right profile based on the bit depth + subsampling
+      pair. Encoder tile threads subX/subY through writeChromaDCLeaf
+      / writeChromaSkipReconstruction so the chroma block size scales
+      correctly. goavif.Encode picks subsampling from image.YCbCr's
+      native SubsampleRatio (when present) or opts.ChromaSubsampling
+      (override), defaulting to 4:2:0. colorspace.ConvertPlanar16
+      generalizes the HBD YUV→RGB converter to arbitrary subsampling
+      so Decode returns proper RGBA64 for 10-bit 4:2:2 / 4:4:4.
+      Round-trips pass for 4:2:0 / 4:2:2 / 4:4:4 at both 8-bit and
+      10-bit; chroma profile switches verified via ParseSequenceHeader.
+- [x] Token qCtx threading. The encoder previously hard-coded qCtx=0
+      in every coefficient CDF lookup (coeff_base_multi, coeff_br_multi,
+      eob_multi, eob_extra). The decoder derives qCtx from
+      base_q_index per spec §7.12.4 — for baseQ ≥ 64 this diverges
+      from 0. Added qCtx to encState (via qIndexToCtx mirroring
+      decoder) and threaded it through WriteCoefficients and
+      writeEOB. Low-quality settings (q=10 → baseQ≈230 → qCtx=3)
+      now decode correctly.
+- [x] Arbitrary-dimension support. goavif.Encode auto-pads frames
+      that aren't multiples of 64 by edge-extending the right/bottom
+      border; the coded frame carries the padded dimensions while
+      ispe records the caller-visible size. goavif.Decode looks up
+      ispe on the primary item and crops the coded frame to that
+      rectangle via image.Image.SubImage, so callers get the exact
+      dimensions they passed to Encode. Round-trips verified at
+      100×100, 133×133, 200×200.
+- [x] Intra-only AVIS sequence encoding. goavif.EncodeAll takes a
+      slice of images + per-frame delays and writes an AVIS container
+      (ftyp brand "avis", compatible_brands include "avif", "msf1",
+      "miaf"). Each frame is encoded as a self-contained AV1 stream
+      (seq-header OBU + frame OBU + tile group) so every sample is a
+      sync point. MarshalPayload implementations added for Mvhd,
+      Stts, Stsc, Stsz, Stco, Co64, Stss; tkhd/mdhd/vmhd/dinf/stsd/
+      av01 sample entries are built as RawBox with hand-constructed
+      payloads. isobmff.BuildSequence assembles ftyp+meta+moov+mdat,
+      computes mdat offsets, and patches stco + iloc after layout.
+      3-frame round-trip preserves per-frame luma shade (50/120/190
+      decodes to 55/125/186) and durations (within 10 ms).
+- [x] 10-bit (HBD) encoder path. WriteSequenceHeaderHBD and
+      WriteMonoSequenceHeaderHBD emit profile-0 high_bitdepth=1
+      sequence headers. New av1/encoder/tile16.go mirrors
+      WriteIntraOnlyTile / writeLeaf / chooseIntraMode /
+      reconstructAndWrite for uint16 sample buffers; the shared
+      symbol emission (partition / modes / tx_type / coefficients)
+      is reused unchanged. goavif.Encode auto-selects the HBD path
+      for image.NRGBA64 / RGBA64 / Gray16 inputs (or explicit
+      opts.BitDepth), extracts BT.601 studio-range uint16 Y/U/V via
+      imageToYUV420_16 / imageToLuma16, and runs the HBD tile
+      writer. The container's av1C, pixi, and colr already honour
+      BitDepth. Alpha items go HBD too when the primary is HBD.
+      A 10-bit NRGBA64 gradient round-trips to a width-equivalent
+      NRGBA-shifted range (12..245 in 8-bit terms at quality=90).
+      12-bit is also wired up: WriteSequenceHeaderHBD selects
+      seq_profile=2 + twelve_bit=1 + explicit 4:2:0 subsampling bits,
+      and opts.BitDepth=12 routes through. A 12-bit NRGBA64 gradient
+      (0..4095) round-trips to 12..243 in 8-bit terms at quality=90.
+- [x] Golomb-rice tail for coefficient levels > 15. The previous
+      encoder and decoder both capped at base+BR = 15 (base 3 +
+      4 × BR ≤ 3), silently truncating any larger quantized
+      magnitude. A 64×64 sharp step (luma 30 → 220) at quality=98
+      now round-trips to left=44 / right=206, near the source
+      BT.601 luma of 44 / 209; previously it would have flattened.
+      Added writeGolomb / readGolomb helpers (uniform 50/50 bypass
+      bits; length zeros + terminating 1 + length low bits of
+      value+1).
 - [ ] Motion estimation + sub-pel refinement
-- [ ] Partition/transform search
+- [ ] Transform / mode / partition RDO search (currently hard-coded
+      DC_PRED + SPLIT + DCT_DCT everywhere)
 - [ ] Rate control (CBR / VBR / constant quality)
-- [ ] Encoder support for alpha, 10/12-bit, image sequences
+- [ ] Encoder support for 10/12-bit and image sequences
 - [ ] Optional film-grain estimation
+
+## Phase 5 — Inter prediction (in progress)
+
+Started as of this session. Decoder infrastructure and primitives
+are landing; block-level syntax and MC integration are the remaining
+work before inter frames actually decode to correct pixels.
+
+- [x] Default inter CDFs ported from libaom (entropymode.c /
+      entropymv.c). Added to `av1/entropy/cdfs/inter.go`:
+      is_inter / skip_mode / single_ref / newmv / zeromv / refmv /
+      drl / mv_joint / mv_sign / mv_class / mv_class0_bit /
+      mv_class0_fr / mv_class0_hp / mv_fr / mv_hp / mv_bits /
+      interp_filter / y_mode (inter-frame variant, not kf).
+- [x] MV decoder: `decoder.MVDecoder` reads mv_joint + per-component
+      sign / class / class0-bit / class0-fr / class0-hp / fr / hp /
+      bits per spec §6.10.27. Tests cover zero joint, positive
+      class-0, and negative class-1 cases — all round-trip through
+      the entropy encoder.
+- [x] 8-tap sub-pel interpolation filters: REGULAR / SMOOTH / SHARP
+      at 16 phases × 8 taps each. `predict.InterpSubPel` runs
+      horizontal-then-vertical pass with int32 accumulator and
+      (1<<14) rounding; `predict.InterpInteger` is the zero-phase
+      fast path. Tests verify zero-phase pass-through and half-pel
+      shift interpolates between neighboring integer samples.
+- [x] Reference frame buffer: `FrameState.RefFrame` carries the
+      previously decoded frame so inter blocks can source MC samples.
+      TileDecoder gains `.inter` / `.refY` / `.refU` / `.refV` slots.
+- [x] Motion compensation: `decoder.MotionCompensate` fetches from
+      a reference plane at an eighth-pel MV offset with edge clamp;
+      integer-pel fast path + 8-tap sub-pel slow path. 3 tests pass.
+- [x] Block-level inter syntax reader: `decoder.InterDecoder` wraps
+      the 18 inter CDFs and exposes ReadIsInter / ReadSingleRefFrame
+      / ReadInterMode / ReadMV / ReadInterpFilter / ReadYMode /
+      ReadSkip — the full set of symbol readers a single-ref NEWMV
+      inter block needs. Rejects compound / multi-ref branches with
+      ErrUnsupportedInterMode.
+- [x] Decoder integration: `decodeLeafBlock` dispatches through
+      `decodeInterLeafBlock` when the tile decoder holds an inter
+      reader. `decodeInterLeafBlock` runs is_inter context, NEWMV
+      MV decode, motion compensation, residual add, and chroma MC
+      with subsampled MV scaling. Intra blocks within inter frames
+      route through the inter-frame Y-mode CDF.
+- [x] Public API: `decoder.DecodeWithRef(data, seq, ref *Frame)`
+      and `NewTileDecoderWithRef` accept the previously decoded
+      frame as MC source. `DecodeAll` threads each decoded frame
+      as the ref for the next sample. `TestDecodeWithRefIntraEquivalent`
+      verifies the new entry point round-trips intra content
+      identically to `Decode`.
+
+- [x] End-to-end inter prediction: `obu.WriteSequenceHeaderAVIS` emits
+      a non-reduced-still-picture-header sequence so inter frames are
+      legal; `obu.WriteAVISKeyFrameHeader` + `obu.WriteInterFrameHeader`
+      pair with it for AVIS keyframes and inter frames. The inter
+      frame-header parser handles the inter branch (ref_frame_idx,
+      interpolation_filter, is_motion_mode_switchable, use_ref_frame_mvs).
+      `encoder.WriteInterCopyTile` produces a structurally valid inter
+      tile where every block is single-ref LAST / NEWMV / zero-MV /
+      skip_txfm — a degenerate "copy frame" that should decode to the
+      reference pixels exactly. `TestInterCopyFrameRoundTrip` validates
+      the full loop: encode key + encode inter → decode both →
+      `keyDecoded.Y == interDecoded.Y` (bit-exact). Encoder/decoder
+      track is_inter neighbor context symmetrically so every CDF
+      lookup matches between the two.
+- [ ] Compound prediction, global motion, warped motion, OBMC,
+      inter-intra, ref MV list construction for NEAREST/NEAR/GLOBAL
+      modes, non-zero MV coding, residual-bearing inter blocks — the
+      primitives (MV decoder supports full syntax, InterpSubPel
+      supports any phase) exist; these are follow-up extensions that
+      build on the working pipeline rather than new infrastructure.
 
 ## Phase 7 — Performance
 
-- [ ] Profile hot paths
+- [x] First-pass allocation cleanup:
+      - fdctMatrixInverse used to build the IDCT matrix from basis
+        vectors on every call (N+1 slice allocs per call). Now cached
+        globally per size in transform.miFor, backed by sync.Once.
+      - Encoder wrapped every symbol's CDF in
+        `append(cdfs.CDF(nil), ...)` before calling EncodeSymbol — ~20
+        copies per leaf block. Our encoder runs with updateCDF=false
+        (disable_cdf_update=1), so EncodeSymbol doesn't mutate the
+        CDF; defaults are now passed by reference.
+      - entropy.Encoder allocated a fresh big.Int per EncodeBool /
+        EncodeSymbol for the loAdd / split value. Added a scratch
+        big.Int on the encoder and SetUint64 + Add in place.
+      - imageToYUV420 / imageToAlpha / wantAlpha had per-pixel
+        m.At(x, y).RGBA() calls that box a Color in an interface;
+        added fast paths for *image.RGBA / *image.NRGBA / *image.YCbCr
+        that read src.Pix directly.
+      - Net: 64×64 encode ~27300 allocs → 502 allocs (~54× less),
+        256×256 encode ~415000 allocs → 3412 allocs (~121× less).
+        Wall time roughly halved.
 - [ ] SIMD asm (`*_amd64.s`, `*_arm64.s`) under build tags without API change
 - [ ] Parallel tile decode/encode
 

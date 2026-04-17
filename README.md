@@ -4,12 +4,26 @@ Pure-Go AVIF image codec — container and AV1 bitstream. No cgo, no third-party
 runtime dependencies in the core codec path.
 
 > **Status: feature-complete for the common still-image + image-sequence
-> decode path; baseline encoder lands an Encode→Decode round trip end-to-end.**
-> 8/10/12-bit, alpha, and AVIS sequences all work on the decode side.
-> The encoder is "minimum viable" — it emits all-skip DC_PRED so output
-> pixels are a constant mid-grey. Residual coefficient coding + real mode
-> decision are follow-ups. See [ROADMAP.md](ROADMAP.md) for the phase
-> plan and progress.
+> decode path. The encoder writes AVIF stills and intra-only AVIS
+> sequences end-to-end.**
+>
+> Decode covers 8/10/12-bit, alpha, 4:2:0 / 4:2:2 / 4:4:4 chroma, AVIS
+> sequences, grid (tiled) primary items, irot/imir/clap transform
+> properties, and the full intra-only AV1 feature set (13 intra modes
+> with extended neighbors, CDEF, deblocking, loop restoration, film
+> grain).
+>
+> Encode supports 8/10/12-bit color + optional alpha, all three chroma
+> subsampling modes, grayscale inputs, auto-padding for non-64-aligned
+> dimensions, and AVIS sequences via EncodeAll. Intra mode search tries
+> 13 modes (DC/V/H/Paeth/Smooth*/all six directional) and picks lowest
+> SAD; adaptive 32→16 partition split for high-detail content; full 2D
+> forward transforms with Golomb-tail coefficient coding.
+>
+> Still TODO: inter prediction for AVIS (decoder returns degraded output
+> with ErrInterPredictionNotImplemented today); bit-exact interop with
+> dav1d/libavif; clap (clean-aperture) crop transforms. See
+> [ROADMAP.md](ROADMAP.md).
 
 ## Install
 
@@ -53,15 +67,27 @@ frames, delays, err := goavif.DecodeAll(r)
 // frame fill.
 ```
 
-### Encode (baseline)
+### Encode
 
 ```go
-err := goavif.Encode(w, img, &goavif.Options{Quality: 50})
+err := goavif.Encode(w, img, &goavif.Options{Quality: 90})
 ```
 
-The baseline encoder produces a valid AVIF container that round-trips
-through `goavif.Decode`. Output pixels are currently mid-grey
-regardless of input — residual coefficient coding is the next piece.
+Supported inputs: `image.RGBA`, `image.NRGBA`, `image.YCbCr` (full color);
+`image.Gray`, `image.Gray16` (monochrome); and anything else via the
+generic `image.Image` `At()` fallback. Non-opaque alpha is detected
+automatically and written as a second AV1 item; set `opts.Alpha = true`
+to force-emit the alpha even when every pixel is opaque.
+
+The encoder currently produces 8-bit 4:2:0 output (profile 0). 10/12-bit
+HBD encoding is on the roadmap; for now HBD inputs are downsampled.
+
+### Encode from the command line
+
+```
+go run ./cmd/goavif-encode -q 90 input.png > output.avif
+go run ./cmd/goavif-encode -q 90 -alpha input.png > output.avif
+```
 
 ### Read image metadata
 
