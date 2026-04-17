@@ -93,32 +93,54 @@ var EightTapSharp = [16][8]int16{
 func InterpSubPel(dst []uint8, w, h int, src []uint8, srcStride, hp, vp int, filt InterpFilter) {
 	hFilter := filtTable(filt)[hp]
 	vFilter := filtTable(filt)[vp]
+	h0 := int32(hFilter[0])
+	h1 := int32(hFilter[1])
+	h2 := int32(hFilter[2])
+	h3 := int32(hFilter[3])
+	h4 := int32(hFilter[4])
+	h5 := int32(hFilter[5])
+	h6 := int32(hFilter[6])
+	h7 := int32(hFilter[7])
+	v0 := int32(vFilter[0])
+	v1 := int32(vFilter[1])
+	v2 := int32(vFilter[2])
+	v3 := int32(vFilter[3])
+	v4 := int32(vFilter[4])
+	v5 := int32(vFilter[5])
+	v6 := int32(vFilter[6])
+	v7 := int32(vFilter[7])
 	// Horizontal pass into a temp row-buffer of size w × (h+7) ints.
 	tmp := make([]int32, w*(h+7))
 	for r := 0; r < h+7; r++ {
+		srcRow := src[r*srcStride:]
+		tmpRow := tmp[r*w : r*w+w]
 		for c := 0; c < w; c++ {
-			sum := int32(0)
-			for k := 0; k < 8; k++ {
-				sum += int32(hFilter[k]) * int32(src[r*srcStride+c+k])
-			}
-			tmp[r*w+c] = sum
+			s := srcRow[c:]
+			tmpRow[c] = h0*int32(s[0]) + h1*int32(s[1]) + h2*int32(s[2]) + h3*int32(s[3]) +
+				h4*int32(s[4]) + h5*int32(s[5]) + h6*int32(s[6]) + h7*int32(s[7])
 		}
 	}
 	// Vertical pass: combine 8 tmp rows into 1 output pixel.
 	for r := 0; r < h; r++ {
+		t0 := tmp[(r+0)*w : (r+0)*w+w]
+		t1 := tmp[(r+1)*w : (r+1)*w+w]
+		t2 := tmp[(r+2)*w : (r+2)*w+w]
+		t3 := tmp[(r+3)*w : (r+3)*w+w]
+		t4 := tmp[(r+4)*w : (r+4)*w+w]
+		t5 := tmp[(r+5)*w : (r+5)*w+w]
+		t6 := tmp[(r+6)*w : (r+6)*w+w]
+		t7 := tmp[(r+7)*w : (r+7)*w+w]
+		dstRow := dst[r*w : r*w+w]
 		for c := 0; c < w; c++ {
-			sum := int32(0)
-			for k := 0; k < 8; k++ {
-				sum += int32(vFilter[k]) * tmp[(r+k)*w+c]
-			}
-			// Total scale is 128×128 = 16384; round and clip.
+			sum := v0*t0[c] + v1*t1[c] + v2*t2[c] + v3*t3[c] +
+				v4*t4[c] + v5*t5[c] + v6*t6[c] + v7*t7[c]
 			v := (sum + (1 << 13)) >> 14
 			if v < 0 {
 				v = 0
 			} else if v > 255 {
 				v = 255
 			}
-			dst[r*w+c] = uint8(v)
+			dstRow[c] = uint8(v)
 		}
 	}
 }

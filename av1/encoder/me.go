@@ -63,6 +63,24 @@ func sadAtClamped(
 	src []uint8, srcStride int, sx, sy, bw, bh int,
 	ref []uint8, refW, refH, refStride int, rx, ry int,
 ) int {
+	// Fast path: entire reference block is in-bounds — no clamping
+	// needed, inner loop becomes a plain SAD.
+	if rx >= 0 && ry >= 0 && rx+bw <= refW && ry+bh <= refH {
+		sum := 0
+		for r := 0; r < bh; r++ {
+			sRow := src[(sy+r)*srcStride+sx:]
+			rRow := ref[(ry+r)*refStride+rx:]
+			for c := 0; c < bw; c++ {
+				d := int(sRow[c]) - int(rRow[c])
+				if d < 0 {
+					d = -d
+				}
+				sum += d
+			}
+		}
+		return sum
+	}
+	// Slow path with clamping on rows and columns.
 	sum := 0
 	for r := 0; r < bh; r++ {
 		sRow := (sy + r) * srcStride
