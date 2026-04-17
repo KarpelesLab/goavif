@@ -159,10 +159,11 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	monochrome := isGrayscale(ref)
 	bitDepth := hbdBitDepth(ref, opts)
 	hbd := bitDepth > 8
+	subX, subY := pickSubsampling(ref, opts)
 
-	// Inter prediction supports 8-bit 4:2:0 and 10/12-bit 4:2:0 color.
-	// Monochrome still falls back to intra-only (no HBD mono inter
-	// path wired up today).
+	// Inter prediction supports 8/10/12-bit at any supported chroma
+	// subsampling (4:2:0 / 4:2:2 / 4:4:4). Monochrome still falls back
+	// to intra-only (no mono inter path wired up today).
 	interEnabled := opts != nil && opts.InterEnabled && !monochrome
 	keyInterval := 1
 	if interEnabled && opts != nil && opts.KeyFrameInterval > 1 {
@@ -176,7 +177,7 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	switch {
 	case interEnabled:
 		seqPayload = obu.WriteSequenceHeaderAVIS(width, height, obu.SeqWriteOpts{
-			BitDepth: bitDepth, SubsamplingX: 1, SubsamplingY: 1,
+			BitDepth: bitDepth, SubsamplingX: subX, SubsamplingY: subY,
 		})
 	case monochrome && hbd:
 		seqPayload = obu.WriteMonoSequenceHeaderHBD(width, height, bitDepth)
@@ -247,12 +248,12 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 			}
 			var tilePayload []byte
 			if hbd {
-				srcY, srcU, srcV := imageToYUV420_16(fr, bitDepth)
+				srcY, srcU, srcV := imageToYUV16(fr, bitDepth, subX, subY)
 				tilePayload, err = encoder.WriteInterMETile16(width, height, interFh, sh,
 					srcY, srcU, srcV,
 					prevDec.Y16, prevDec.U16, prevDec.V16, prevDec.Width, prevDec.Height, 8)
 			} else {
-				srcY, srcU, srcV := imageToYUV420(fr)
+				srcY, srcU, srcV := imageToYUV(fr, subX, subY)
 				tilePayload, err = encoder.WriteInterMETile(width, height, interFh, sh,
 					srcY, srcU, srcV,
 					prevDec.Y, prevDec.U, prevDec.V, prevDec.Width, prevDec.Height, 8)

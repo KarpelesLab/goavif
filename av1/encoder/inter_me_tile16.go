@@ -37,11 +37,13 @@ func WriteInterMETile16(width, height int,
 	if bitDepth < 8 {
 		bitDepth = 8
 	}
+	subX := int(sh.Color.SubsamplingX)
+	subY := int(sh.Color.SubsamplingY)
 	miCols := (width + 3) >> 2
 	miRows := (height + 3) >> 2
 	inter := make([]uint8, miCols*miRows)
 	refYStride := refW
-	refCStride := refW >> 1
+	refCStride := refW >> uint(subX)
 	srcYStride := width
 
 	for y := 0; y < height; y += sbSize {
@@ -53,7 +55,7 @@ func WriteInterMETile16(width, height int,
 				encodeInter32_16(&enc, bx, by,
 					srcY, srcU, srcV, srcYStride,
 					refY, refU, refV, refW, refH, refYStride, refCStride,
-					inter, miCols, miRows, baseQ, bitDepth, searchRange)
+					inter, miCols, miRows, baseQ, bitDepth, searchRange, subX, subY)
 			}
 		}
 	}
@@ -67,6 +69,7 @@ func encodeInter32_16(enc *entropy.Encoder, bx, by int,
 	refY, refU, refV []uint16,
 	refW, refH, refYStride, refCStride int,
 	inter []uint8, miCols, miRows, baseQ, bitDepth, searchRange int,
+	subX, subY int,
 ) {
 	mv := DiamondSearchMV16(srcY, srcYStride, bx, by, 32, 32,
 		refY, refW, refH, refYStride, searchRange)
@@ -81,7 +84,7 @@ func encodeInter32_16(enc *entropy.Encoder, bx, by int,
 		writeInterResidualBlock16(enc, bx, by, 32, 32, mv,
 			srcY, srcU, srcV,
 			refY, refU, refV, refW, refH, refYStride, refCStride,
-			inter, miCols, miRows, baseQ, bitDepth)
+			inter, miCols, miRows, baseQ, bitDepth, subX, subY)
 		return
 	}
 	writePartitionSymbol(enc, 2, 0, 3)
@@ -96,7 +99,7 @@ func encodeInter32_16(enc *entropy.Encoder, bx, by int,
 		writeInterResidualBlock16(enc, sx, sy, 16, 16, mv16,
 			srcY, srcU, srcV,
 			refY, refU, refV, refW, refH, refYStride, refCStride,
-			inter, miCols, miRows, baseQ, bitDepth)
+			inter, miCols, miRows, baseQ, bitDepth, subX, subY)
 	}
 }
 
@@ -109,7 +112,7 @@ func writeInterResidualBlock16(enc *entropy.Encoder,
 	refY, refU, refV []uint16,
 	refW, refH, refYStride, refCStride int,
 	inter []uint8, miCols, miRows int,
-	baseQ, bitDepth int,
+	baseQ, bitDepth, subX, subY int,
 ) {
 	miCol := bx >> 2
 	miRow := by >> 2
@@ -164,10 +167,20 @@ func writeInterResidualBlock16(enc *entropy.Encoder,
 	qCtx := qIndexToCtx(baseQ)
 	WriteCoefficients(enc, coeffs, txSizeIdx, 0, qCtx, scan, nzMap, txW, txH)
 
-	// Chroma: bw/2 × bh/2 at chroma res.
-	cbw := bw >> 1
-	cbh := bh >> 1
-	chromaMV := decoder.MV{Row: mv.Row >> 1, Col: mv.Col >> 1}
+	// Chroma (subsampling-aware).
+	cbw := bw >> uint(subX)
+	cbh := bh >> uint(subY)
+	if cbw < 1 {
+		cbw = 1
+	}
+	if cbh < 1 {
+		cbh = 1
+	}
+	chromaMV := decoder.MV{Row: mv.Row >> uint(subY), Col: mv.Col >> uint(subX)}
+	cbx := bx >> uint(subX)
+	cby := by >> uint(subY)
+	crefW := refW >> uint(subX)
+	crefH := refH >> uint(subY)
 	for plane := 0; plane < 2; plane++ {
 		srcPlane := srcU
 		refPlane := refU
@@ -179,13 +192,13 @@ func writeInterResidualBlock16(enc *entropy.Encoder,
 		}
 		cpred := make([]uint16, cbw*cbh)
 		decoder.MotionCompensate16(cpred, cbw, cbh, refPlane,
-			refW>>1, refH>>1, refCStride,
-			bx>>1, by>>1, chromaMV, predict.InterpRegular, bitDepth)
+			crefW, crefH, refCStride,
+			cbx, cby, chromaMV, predict.InterpRegular, bitDepth)
 		ctxSizeIdx, cnzMap, cscan, ctxSize, ctxW, ctxH := selectEncTxParams(cbw, cbh)
 		cresid := make([]int32, ctxW*ctxH)
 		for r := 0; r < cbh; r++ {
 			for c := 0; c < cbw; c++ {
-				cresid[r*ctxW+c] = int32(srcPlane[(by>>1+r)*refCStride+(bx>>1+c)]) - int32(cpred[r*cbw+c])
+				cresid[r*ctxW+c] = int32(srcPlane[(cby+r)*refCStride+(cbx+c)]) - int32(cpred[r*cbw+c])
 			}
 		}
 		if err := transform.Forward2D(cresid, transform.DctDct, ctxSize); err != nil {

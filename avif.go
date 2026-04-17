@@ -46,6 +46,12 @@ type Options struct {
 	// 0, N, 2N, ... are keyframes. No effect when InterEnabled is
 	// false.
 	KeyFrameInterval int
+	// TargetBytes enables target-size rate control: when non-zero,
+	// [Encode] runs a Q-bisection loop and returns the best bitstream
+	// within ±10% of the target (or the tightest quality-bounded
+	// result if the target can't be hit). Overrides [Options.Quality]
+	// when set. No effect on [EncodeAll] / [EncodeGrid] currently.
+	TargetBytes int
 }
 
 // ChromaSubsampling identifies a YUV chroma sampling configuration.
@@ -1199,9 +1205,23 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 	}, nil
 }
 
-// Encode writes m to w as an AVIF image using opts. Not implemented yet;
-// returns [ErrUnsupported].
+// Encode writes m to w as an AVIF image using opts.
+//
+// When opts.TargetBytes > 0, Encode runs a Q-bisection rate-control
+// loop: it encodes the image at a series of Q values and returns the
+// smallest-distortion bitstream whose size lands within ±10% of the
+// target, falling back to the closest-below result when the exact
+// target cannot be met. Otherwise a single-pass encode is performed
+// at opts.Quality (default 50).
 func Encode(w io.Writer, m image.Image, opts *Options) error {
+	if opts != nil && opts.TargetBytes > 0 && !opts.Lossless {
+		return encodeTargetSize(w, m, opts)
+	}
+	return encodeFixedQ(w, m, opts)
+}
+
+// encodeFixedQ performs a single-pass encode at opts.Quality.
+func encodeFixedQ(w io.Writer, m image.Image, opts *Options) error {
 	if m == nil {
 		return fmt.Errorf("goavif: nil image")
 	}
@@ -1302,6 +1322,68 @@ func Encode(w io.Writer, m image.Image, opts *Options) error {
 	}
 	return finishEncode(w, m, opts, width, height, origW, origH, baseQ, 8, sh,
 		seqPayload, framePayload, tilePayload)
+}
+
+// encodeTargetSize drives a Q-bisection loop to land the encoded
+// bitstream within ±10% of opts.TargetBytes. Starts with quality=50
+// and adjusts up (smaller file) or down (larger file) until the
+// window is hit or the quality range is exhausted.
+func encodeTargetSize(w io.Writer, m image.Image, opts *Options) error {
+	target := opts.TargetBytes
+	tolerance := target / 10 // ±10%
+	if tolerance < 256 {
+		tolerance = 256
+	}
+
+	var bestBuf []byte
+	bestErr := -1
+	loQ := 1
+	hiQ := 100
+	q := 50
+	if opts.Quality > 0 && opts.Quality <= 100 {
+		q = opts.Quality
+	}
+
+	maxIters := 8
+	for iter := 0; iter < maxIters && loQ <= hiQ; iter++ {
+		var buf bytes.Buffer
+		tryOpts := *opts
+		tryOpts.Quality = q
+		tryOpts.TargetBytes = 0 // avoid recursion
+		if err := encodeFixedQ(&buf, m, &tryOpts); err != nil {
+			return err
+		}
+		size := buf.Len()
+		diff := size - target
+		absDiff := diff
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+		// Keep the closest-to-target result so far.
+		if bestErr < 0 || absDiff < bestErr {
+			bestErr = absDiff
+			bestBuf = buf.Bytes()
+		}
+		if absDiff <= tolerance {
+			// Within target window — prefer higher quality when tied.
+			_, err := w.Write(buf.Bytes())
+			return err
+		}
+		if size > target {
+			// Too big — lower quality.
+			hiQ = q - 1
+		} else {
+			// Too small — raise quality.
+			loQ = q + 1
+		}
+		q = (loQ + hiQ) / 2
+	}
+
+	if bestBuf != nil {
+		_, err := w.Write(bestBuf)
+		return err
+	}
+	return fmt.Errorf("goavif: rate control failed to produce a bitstream")
 }
 
 // pickSubsampling selects (subX, subY) for the encoder output:

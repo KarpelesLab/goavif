@@ -150,11 +150,13 @@ func WriteInterResidualTile(width, height int,
 
 	sbSize := 64
 	baseQ := int(fh.Quant.BaseQIndex)
+	subX := int(sh.Color.SubsamplingX)
+	subY := int(sh.Color.SubsamplingY)
 	miCols := (width + 3) >> 2
 	miRows := (height + 3) >> 2
 	inter := make([]uint8, miCols*miRows)
 	refYStride := refW
-	refCStride := refW >> 1
+	refCStride := refW >> uint(subX)
 
 	for y := 0; y < height; y += sbSize {
 		for x := 0; x < width; x += sbSize {
@@ -167,7 +169,7 @@ func WriteInterResidualTile(width, height int,
 					writeInterResidualBlock(&enc, bx, by, 32, 32, mv,
 						srcY, srcU, srcV,
 						refY, refU, refV, refW, refH, refYStride, refCStride,
-						inter, miCols, miRows, baseQ)
+						inter, miCols, miRows, baseQ, subX, subY)
 				}
 				continue
 			}
@@ -184,7 +186,7 @@ func WriteInterResidualTile(width, height int,
 			writeInterResidualBlock(&enc, x, y, bw, bh, mv,
 				srcY, srcU, srcV,
 				refY, refU, refV, refW, refH, refYStride, refCStride,
-				inter, miCols, miRows, baseQ)
+				inter, miCols, miRows, baseQ, subX, subY)
 		}
 	}
 	return enc.Finish(), nil
@@ -200,7 +202,7 @@ func writeInterResidualBlock(enc *entropy.Encoder,
 	refY, refU, refV []uint8,
 	refW, refH, refYStride, refCStride int,
 	inter []uint8, miCols, miRows int,
-	baseQ int,
+	baseQ, subX, subY int,
 ) {
 	miCol := bx >> 2
 	miRow := by >> 2
@@ -265,12 +267,20 @@ func writeInterResidualBlock(enc *entropy.Encoder,
 	qCtx := qIndexToCtx(baseQ)
 	WriteCoefficients(enc, coeffs, txSizeIdx, 0, qCtx, scan, nzMap, txW, txH)
 
-	// Chroma residuals (4:2:0): block is bw/2 × bh/2 at chroma res.
-	// MV halves per axis. Use DCT_DCT with no tx_type signaling
-	// (chroma ext_tx set is 0).
-	cbw := bw >> 1
-	cbh := bh >> 1
-	chromaMV := decoder.MV{Row: mv.Row >> 1, Col: mv.Col >> 1}
+	// Chroma residuals (subsampling-aware).
+	cbw := bw >> uint(subX)
+	cbh := bh >> uint(subY)
+	if cbw < 1 {
+		cbw = 1
+	}
+	if cbh < 1 {
+		cbh = 1
+	}
+	chromaMV := decoder.MV{Row: mv.Row >> uint(subY), Col: mv.Col >> uint(subX)}
+	cbx := bx >> uint(subX)
+	cby := by >> uint(subY)
+	crefW := refW >> uint(subX)
+	crefH := refH >> uint(subY)
 	for plane := 0; plane < 2; plane++ {
 		srcPlane := srcU
 		refPlane := refU
@@ -283,14 +293,14 @@ func writeInterResidualBlock(enc *entropy.Encoder,
 		// MC prediction for chroma.
 		cpred := make([]uint8, cbw*cbh)
 		decoder.MotionCompensate(cpred, cbw, cbh, refPlane,
-			refW>>1, refH>>1, refCStride,
-			bx>>1, by>>1, chromaMV, predict.InterpRegular)
+			crefW, crefH, refCStride,
+			cbx, cby, chromaMV, predict.InterpRegular)
 		// Residual.
 		ctxSizeIdx, cnzMap, cscan, ctxSize, ctxW, ctxH := selectEncTxParams(cbw, cbh)
 		cresid := make([]int32, ctxW*ctxH)
 		for r := 0; r < cbh; r++ {
 			for c := 0; c < cbw; c++ {
-				cresid[r*ctxW+c] = int32(srcPlane[(by>>1+r)*refCStride+(bx>>1+c)]) - int32(cpred[r*cbw+c])
+				cresid[r*ctxW+c] = int32(srcPlane[(cby+r)*refCStride+(cbx+c)]) - int32(cpred[r*cbw+c])
 			}
 		}
 		if err := transform.Forward2D(cresid, transform.DctDct, ctxSize); err != nil {

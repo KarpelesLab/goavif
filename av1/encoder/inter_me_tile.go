@@ -13,9 +13,9 @@ import (
 // for encoding a real AVIS inter frame.
 //
 // srcY / srcU / srcV are the source planes; refY / refU / refV are
-// the reference planes (refW × refH). Only 4:2:0 single-reference
-// integer-pel ME is supported today. searchRange is the per-axis
-// half-window in pixels (e.g. 16 → ±16 pel search).
+// the reference planes (refW × refH). Chroma subsampling is taken
+// from sh.Color (supports 4:2:0 / 4:2:2 / 4:4:4). searchRange is the
+// per-axis half-window in pixels.
 //
 // When a 32×32 block's best-MV SAD is above a split threshold, the
 // block is further split into four 16×16 sub-blocks, each with its
@@ -39,11 +39,13 @@ func WriteInterMETile(width, height int,
 
 	sbSize := 64
 	baseQ := int(fh.Quant.BaseQIndex)
+	subX := int(sh.Color.SubsamplingX)
+	subY := int(sh.Color.SubsamplingY)
 	miCols := (width + 3) >> 2
 	miRows := (height + 3) >> 2
 	inter := make([]uint8, miCols*miRows)
 	refYStride := refW
-	refCStride := refW >> 1
+	refCStride := refW >> uint(subX)
 	srcYStride := width
 
 	for y := 0; y < height; y += sbSize {
@@ -55,7 +57,7 @@ func WriteInterMETile(width, height int,
 				encodeInter32(&enc, bx, by,
 					srcY, srcU, srcV, srcYStride,
 					refY, refU, refV, refW, refH, refYStride, refCStride,
-					inter, miCols, miRows, baseQ, searchRange)
+					inter, miCols, miRows, baseQ, searchRange, subX, subY)
 			}
 		}
 	}
@@ -70,6 +72,7 @@ func encodeInter32(enc *entropy.Encoder, bx, by int,
 	refY, refU, refV []uint8,
 	refW, refH, refYStride, refCStride int,
 	inter []uint8, miCols, miRows, baseQ, searchRange int,
+	subX, subY int,
 ) {
 	mv := DiamondSearchMV(srcY, srcYStride, bx, by, 32, 32,
 		refY, refW, refH, refYStride, searchRange)
@@ -87,7 +90,7 @@ func encodeInter32(enc *entropy.Encoder, bx, by int,
 		writeInterResidualBlock(enc, bx, by, 32, 32, mv,
 			srcY, srcU, srcV,
 			refY, refU, refV, refW, refH, refYStride, refCStride,
-			inter, miCols, miRows, baseQ)
+			inter, miCols, miRows, baseQ, subX, subY)
 		return
 	}
 	// Split path — emit PARTITION_SPLIT at bsl=2 and re-run ME per
@@ -104,6 +107,6 @@ func encodeInter32(enc *entropy.Encoder, bx, by int,
 		writeInterResidualBlock(enc, sx, sy, 16, 16, mv16,
 			srcY, srcU, srcV,
 			refY, refU, refV, refW, refH, refYStride, refCStride,
-			inter, miCols, miRows, baseQ)
+			inter, miCols, miRows, baseQ, subX, subY)
 	}
 }
