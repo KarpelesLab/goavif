@@ -500,11 +500,15 @@ work before inter frames actually decode to correct pixels.
       `encoder.WriteInterCopyTile` produces a structurally valid inter
       tile where every block is single-ref LAST / NEWMV / zero-MV /
       skip_txfm — a degenerate "copy frame" that should decode to the
-      reference pixels exactly. `TestInterCopyFrameRoundTrip` validates
-      the full loop: encode key + encode inter → decode both →
-      `keyDecoded.Y == interDecoded.Y` (bit-exact). Encoder/decoder
-      track is_inter neighbor context symmetrically so every CDF
-      lookup matches between the two.
+      reference pixels exactly. Generalized via
+      `encoder.WriteInterUniformMVTile` (uniform non-zero MV) and
+      `encoder.WriteInterResidualTile` (MV + quantized Y/UV residual
+      against MC prediction). Four round-trip tests validate the
+      loop: copy, horizontal MV, vertical MV, residual (MAD ≈ 4
+      samples at baseQ=40). Encoder's `writeMV` / `writeMVComponent`
+      mirror the decoder's MV reader so mv_joint / sign / class /
+      bits all round-trip. Encoder/decoder track is_inter neighbor
+      context symmetrically.
 - [ ] Compound prediction, global motion, warped motion, OBMC,
       inter-intra, ref MV list construction for NEAREST/NEAR/GLOBAL
       modes, non-zero MV coding, residual-bearing inter blocks — the
