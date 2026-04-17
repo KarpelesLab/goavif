@@ -33,9 +33,10 @@ func main() {
 	subsampling := flag.String("subsampling", "", "chroma subsampling: 420, 422, 444 (default: from input YCbCr, else 4:2:0)")
 	targetBytes := flag.Int("target-bytes", 0, "target file size in bytes; enables rate-control Q-bisection loop")
 	speed := flag.Int("speed", 0, "encode speed 0..10 (0=slowest/best, 10=fastest/worst); affects ME search range")
+	filmGrain := flag.Int("film-grain", 0, "film grain luma strength 0..255 (0=off, 8..32=subtle, 48..64=heavy)")
 	outPath := flag.String("o", "", "output file path (default stdout)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: goavif-encode [-q QUALITY | -target-bytes N] [-alpha] [-bit-depth N] [-subsampling S] [-speed N] [-o OUT] input.{png,jpg}")
+		fmt.Fprintln(os.Stderr, "usage: goavif-encode [-q QUALITY | -target-bytes N] [-alpha] [-bit-depth N] [-subsampling S] [-speed N] [-film-grain N] [-o OUT] input.{png,jpg}")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -59,11 +60,16 @@ func main() {
 		out = f
 	}
 
+	if *filmGrain < 0 || *filmGrain > 255 {
+		fmt.Fprintf(os.Stderr, "goavif-encode: invalid -film-grain %d (want 0..255)\n", *filmGrain)
+		os.Exit(2)
+	}
 	opts := &goavif.Options{
-		Quality:     *quality,
-		Alpha:       *alpha,
-		TargetBytes: *targetBytes,
-		Speed:       *speed,
+		Quality:           *quality,
+		Alpha:             *alpha,
+		TargetBytes:       *targetBytes,
+		Speed:             *speed,
+		FilmGrainStrength: uint8(*filmGrain),
 	}
 	switch *bitDepth {
 	case 0:
