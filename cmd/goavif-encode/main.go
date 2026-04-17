@@ -27,13 +27,15 @@ import (
 )
 
 func main() {
-	quality := flag.Int("q", 50, "encode quality (1..100)")
+	quality := flag.Int("q", 50, "encode quality (1..100); ignored when -target-bytes is set")
 	alpha := flag.Bool("alpha", false, "force emission of an alpha auxiliary item even when all pixels are opaque")
 	bitDepth := flag.Int("bit-depth", 0, "bit depth: 8, 10, or 12 (0 = auto from input)")
 	subsampling := flag.String("subsampling", "", "chroma subsampling: 420, 422, 444 (default: from input YCbCr, else 4:2:0)")
+	targetBytes := flag.Int("target-bytes", 0, "target file size in bytes; enables rate-control Q-bisection loop")
+	speed := flag.Int("speed", 0, "encode speed 0..10 (0=slowest/best, 10=fastest/worst); affects ME search range")
 	outPath := flag.String("o", "", "output file path (default stdout)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: goavif-encode [-q QUALITY] [-alpha] [-bit-depth N] [-subsampling S] [-o OUT] input.{png,jpg}")
+		fmt.Fprintln(os.Stderr, "usage: goavif-encode [-q QUALITY | -target-bytes N] [-alpha] [-bit-depth N] [-subsampling S] [-speed N] [-o OUT] input.{png,jpg}")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -57,7 +59,12 @@ func main() {
 		out = f
 	}
 
-	opts := &goavif.Options{Quality: *quality, Alpha: *alpha}
+	opts := &goavif.Options{
+		Quality:     *quality,
+		Alpha:       *alpha,
+		TargetBytes: *targetBytes,
+		Speed:       *speed,
+	}
 	switch *bitDepth {
 	case 0:
 		// Auto.

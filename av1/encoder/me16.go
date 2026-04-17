@@ -1,9 +1,18 @@
 package encoder
 
 import (
+	"sync"
+
 	"github.com/KarpelesLab/goavif/av1/decoder"
 	"github.com/KarpelesLab/goavif/av1/predict"
 )
+
+var mePred16Pool = sync.Pool{
+	New: func() any {
+		b := make([]uint16, 64*64)
+		return &b
+	},
+}
 
 // SearchMV16 is the HBD counterpart of [SearchMV]: full-window SAD
 // search over a uint16 reference plane.
@@ -145,7 +154,18 @@ func sadForMV16(
 	refY []uint16, refW, refH, refStride int,
 	mv decoder.MV, bitDepth int,
 ) int {
-	pred := make([]uint16, bw*bh)
+	predPtr := mePred16Pool.Get().(*[]uint16)
+	pred := *predPtr
+	need := bw * bh
+	if cap(pred) < need {
+		pred = make([]uint16, need)
+	} else {
+		pred = pred[:need]
+	}
+	defer func() {
+		*predPtr = pred
+		mePred16Pool.Put(predPtr)
+	}()
 	decoder.MotionCompensate16(pred, bw, bh, refY, refW, refH, refStride,
 		bx, by, mv, predict.InterpRegular, bitDepth)
 	sum := 0

@@ -1,6 +1,17 @@
 package decoder
 
-import "github.com/KarpelesLab/goavif/av1/predict"
+import (
+	"sync"
+
+	"github.com/KarpelesLab/goavif/av1/predict"
+)
+
+var mcPad16Pool = sync.Pool{
+	New: func() any {
+		b := make([]uint16, 71*71)
+		return &b
+	},
+}
 
 // MotionCompensate16 is the HBD counterpart of [MotionCompensate]: it
 // produces a w×h uint16 predicted block at dst using refY at position
@@ -33,8 +44,19 @@ func MotionCompensate16(
 		return
 	}
 
-	pad := make([]uint16, (w+7)*(h+7))
 	padStride := w + 7
+	padLen := padStride * (h + 7)
+	padPtr := mcPad16Pool.Get().(*[]uint16)
+	pad := *padPtr
+	if cap(pad) < padLen {
+		pad = make([]uint16, padLen)
+	} else {
+		pad = pad[:padLen]
+	}
+	defer func() {
+		*padPtr = pad
+		mcPad16Pool.Put(padPtr)
+	}()
 	for r := 0; r < h+7; r++ {
 		sy := clampInt(by+intY+r-3, 0, refH-1)
 		for c := 0; c < w+7; c++ {

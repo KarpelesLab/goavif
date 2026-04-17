@@ -1,9 +1,21 @@
 package encoder
 
 import (
+	"sync"
+
 	"github.com/KarpelesLab/goavif/av1/decoder"
 	"github.com/KarpelesLab/goavif/av1/predict"
 )
+
+// mePredPool reuses the MC prediction buffer used by sadForMV during
+// sub-pel search — each search tests 17+ candidate MVs per block, so
+// keeping the allocation off the hot path is worth a pool.
+var mePredPool = sync.Pool{
+	New: func() any {
+		b := make([]uint8, 64*64)
+		return &b
+	},
+}
 
 // SearchMV finds a good integer-pel motion vector for the bw×bh
 // block whose top-left is at (bx, by) in the source plane, scanning
@@ -140,7 +152,18 @@ func sadForMV(
 	refY []uint8, refW, refH, refStride int,
 	mv decoder.MV,
 ) int {
-	pred := make([]uint8, bw*bh)
+	predPtr := mePredPool.Get().(*[]uint8)
+	pred := *predPtr
+	need := bw * bh
+	if cap(pred) < need {
+		pred = make([]uint8, need)
+	} else {
+		pred = pred[:need]
+	}
+	defer func() {
+		*predPtr = pred
+		mePredPool.Put(predPtr)
+	}()
 	decoder.MotionCompensate(pred, bw, bh, refY, refW, refH, refStride,
 		bx, by, mv, predict.InterpRegular)
 	sum := 0

@@ -1,6 +1,21 @@
 package decoder
 
-import "github.com/KarpelesLab/goavif/av1/predict"
+import (
+	"sync"
+
+	"github.com/KarpelesLab/goavif/av1/predict"
+)
+
+// mcPadPool reuses the (w+7)×(h+7) padded reference region across
+// sub-pel MC calls. The biggest block we generate prediction for is
+// 64×64 → pad 71×71 = 5041 bytes; we size the pool's default slice
+// to 64×64+7×7 = 4096+49 = 5041 to fit comfortably.
+var mcPadPool = sync.Pool{
+	New: func() any {
+		b := make([]uint8, 71*71)
+		return &b
+	},
+}
 
 // MotionCompensate produces an w×h predicted block at dst using the
 // reference plane `refY` at position (bx + mv.Col, by + mv.Row) where
@@ -46,9 +61,21 @@ func MotionCompensate(
 	}
 
 	// Sub-pel: build a (w+7) × (h+7) padded source region with
-	// clamping, then run the 8-tap filter.
-	pad := make([]uint8, (w+7)*(h+7))
+	// clamping, then run the 8-tap filter. Reuse a pooled buffer to
+	// keep per-call allocations off the hot path.
 	padStride := w + 7
+	padLen := padStride * (h + 7)
+	padPtr := mcPadPool.Get().(*[]uint8)
+	pad := *padPtr
+	if cap(pad) < padLen {
+		pad = make([]uint8, padLen)
+	} else {
+		pad = pad[:padLen]
+	}
+	defer func() {
+		*padPtr = pad
+		mcPadPool.Put(padPtr)
+	}()
 	for r := 0; r < h+7; r++ {
 		sy := by + intY + r - 3
 		sy = clampInt(sy, 0, refH-1)
