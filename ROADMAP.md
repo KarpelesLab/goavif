@@ -165,14 +165,27 @@ the full intra mode set (DC/V/H/Smooth*/Paeth/D45-D67) and proper CFL.
 
 Parity with the reference conformance suite.
 
-- [ ] Inter prediction: single and compound references, translational
-      and warp, global motion
-- [ ] Loop restoration (Wiener + self-guided): move from Phase 2
-- [ ] Film grain synthesis: move from Phase 2
+- [x] Inter prediction (single reference, translational): landed in
+      Phase 5 — single-ref LAST + NEWMV / GLOBALMV / NEAREST / NEAR
+      (reduced to zero-MV without ref-MV list), sub-pel 8-tap filter,
+      at 8/10/12-bit depth.
+- [ ] Inter prediction: compound references, warped motion,
+      global motion with non-identity transforms (single-ref
+      translational covers the AVIS common case already)
+- [x] Loop restoration primitives (Wiener + SGR) — implemented in
+      Phase 2. Per-unit signaling + frame-driver wiring deferred.
+- [x] Film grain synthesis — implemented and wired into the decode
+      pipeline in Phase 2. Encoder-side estimation deferred.
 - [ ] Full ref-frame management + segmentation temporal update
-- [ ] 10/12-bit pixel pipeline end-to-end
-- [ ] Monochrome, 4:2:2, 4:4:4 chroma sampling fully exercised
+- [x] 10/12-bit pixel pipeline end-to-end — decoder handles intra
+      and inter at HBD; encoder handles intra and inter at HBD;
+      all post-processing (deblock/CDEF/LR/film-grain) has uint16
+      variants.
+- [x] Monochrome (Gray), 4:2:0, 4:2:2, 4:4:4 chroma sampling —
+      exercised in encode/decode round-trip tests at 8-bit and 10-bit.
+      (Inter encoder currently requires 4:2:0; intra supports all.)
 - [ ] Conformance harness driven from official AV1 test vectors
+      (blocked on test-vector fetch)
 
 ## Phase 4 — Alpha, HDR, image sequences ✅
 
@@ -195,10 +208,10 @@ Parity with the reference conformance suite.
       1-frame slice, AVIS sequences as per-sample frames +
       time.Duration timings.
 - [x] Sync-sample / CRA handling: stss parsing + per-sample IsSync
-      in the sample table. DecodeAll decodes sync samples directly
-      and repeats the previous frame for inter frames, returning
-      ErrInterPredictionNotImplemented so callers can detect the
-      degraded output. Full-inter support lands with Phase 5+.
+      in the sample table. DecodeAll now feeds every sample to
+      DecodeWithRef (including non-sync inter samples); unsupported
+      inter modes fall back to repeating the prior frame and signal
+      ErrInterPredictionNotImplemented.
 
 ## Phase 5 — AV1 encoder: intra-only baseline ✅
 
