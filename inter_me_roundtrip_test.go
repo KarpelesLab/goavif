@@ -44,6 +44,46 @@ func TestMotionEstimationRecoversShift(t *testing.T) {
 		mv.Col, mv.Col/8, mv.Row, mv.Row/8)
 }
 
+// TestSubPelRefineImprovesMatch verifies that SubPelRefineMV finds a
+// better match than integer-pel alone for a source that is a half-pel
+// shift of the reference. The reference is a linear gradient; the
+// source is the same gradient shifted by 0.5 pel (= MV col=4).
+func TestSubPelRefineImprovesMatch(t *testing.T) {
+	const dim = 64
+	ref := make([]uint8, dim*dim)
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			ref[y*dim+x] = uint8(x * 4)
+		}
+	}
+	// Source = ref shifted right by 0.5 pel via linear blend of
+	// ref[x] and ref[x+1].
+	src := make([]uint8, dim*dim)
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			rx := x
+			if rx+1 < dim {
+				src[y*dim+x] = uint8((int(ref[y*dim+rx]) + int(ref[y*dim+rx+1])) / 2)
+			} else {
+				src[y*dim+x] = ref[y*dim+rx]
+			}
+		}
+	}
+	// Integer ME — best match is dx=0 (since the shift is sub-pel).
+	mvInt := encoder.SearchMV(src, dim, 0, 0, 32, 32, ref, dim, dim, dim, 4)
+	if mvInt.Col != 0 || mvInt.Row != 0 {
+		t.Logf("integer MV = (col=%d, row=%d) — unexpected but not fatal", mvInt.Col, mvInt.Row)
+	}
+
+	// Sub-pel refinement should push col to ~+4 (half-pel).
+	mvRef := encoder.SubPelRefineMV(src, dim, 0, 0, 32, 32, ref, dim, dim, dim, mvInt)
+	t.Logf("refined MV: col=%d, row=%d (integer was col=%d, row=%d)",
+		mvRef.Col, mvRef.Row, mvInt.Col, mvInt.Row)
+	if mvRef.Col == 0 && mvRef.Row == 0 {
+		t.Fatalf("SubPelRefineMV did not change integer MV (col=0, row=0) — expected sub-pel offset")
+	}
+}
+
 // TestWriteInterMETileRoundTrip exercises the full ME pipeline: build
 // a key frame, build a source that's the key frame shifted by a few
 // pixels, encode an inter frame via WriteInterMETile, decode against

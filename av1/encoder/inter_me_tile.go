@@ -50,6 +50,8 @@ func WriteInterMETile(width, height int,
 				writePartitionSymbol(&enc, 2, 0, 0 /* NONE */)
 				mv := DiamondSearchMV(srcY, srcYStride, bx, by, 32, 32,
 					refY, refW, refH, refYStride, searchRange)
+				mv = SubPelRefineMV(srcY, srcYStride, bx, by, 32, 32,
+					refY, refW, refH, refYStride, mv)
 				writeInterResidualBlock(&enc, bx, by, 32, 32, mv,
 					srcY, srcU, srcV,
 					refY, refU, refV, refW, refH, refYStride, refCStride,

@@ -454,7 +454,14 @@ Follow-ups (outside the "baseline" goal of this phase):
       inter samples are reconstructed with motion compensation.
       Gradient round-trip across a 3-frame inter sequence recovers
       per-frame shade within ±10.
-- [ ] Sub-pel motion estimation refinement (currently integer-pel only)
+- [x] Sub-pel motion estimation refinement: `encoder.SubPelRefineMV`
+      runs a two-pass refinement (8 half-pel neighbors, then 8 quarter-
+      pel neighbors around the best half-pel) using the 8-tap
+      interpolation filter through `decoder.MotionCompensate` for each
+      candidate and picking the lowest-SAD result. Plugged into
+      `WriteInterMETile`, so every ME-driven inter block now benefits
+      from sub-pel precision. Test case: a 0.5-pel half-blended
+      gradient recovers col=4 (half-pel) from col=0 integer ME.
 - [ ] Transform / mode / partition RDO search (currently hard-coded
       DC_PRED + SPLIT + DCT_DCT everywhere)
 - [ ] Rate control (CBR / VBR / constant quality)

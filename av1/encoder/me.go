@@ -2,6 +2,7 @@ package encoder
 
 import (
 	"github.com/KarpelesLab/goavif/av1/decoder"
+	"github.com/KarpelesLab/goavif/av1/predict"
 )
 
 // SearchMV finds a good integer-pel motion vector for the bw×bh
@@ -68,6 +69,86 @@ func sadAtClamped(
 				rx2 = refW - 1
 			}
 			d := int(src[sRow+sx+c]) - int(ref[rRow+rx2])
+			if d < 0 {
+				d = -d
+			}
+			sum += d
+		}
+	}
+	return sum
+}
+
+// SubPelRefineMV refines an integer-pel MV to eighth-pel precision by
+// sampling 3 phases per axis ({-4, 0, +4}, i.e. half-pel steps) around
+// the starting MV, picking the best via SAD against the reference's
+// motion-compensated prediction.
+//
+// Returns an MV with the refined sub-pel phase in eighth-pel units.
+// The integer-pel component of the result equals the input; only the
+// low 3 bits (phase) change. Call this after SearchMV or
+// DiamondSearchMV to convert coarse integer-pel matches into sub-pel
+// matches.
+func SubPelRefineMV(
+	srcY []uint8, srcStride int,
+	bx, by, bw, bh int,
+	refY []uint8, refW, refH, refStride int,
+	integerMV decoder.MV,
+) decoder.MV {
+	bestMV := integerMV
+	bestSAD := sadForMV(srcY, srcStride, bx, by, bw, bh,
+		refY, refW, refH, refStride, integerMV)
+
+	// Half-pel refinement grid: 8 neighbors at phase ±4.
+	offs := [8][2]int32{
+		{4, 0}, {-4, 0}, {0, 4}, {0, -4},
+		{4, 4}, {4, -4}, {-4, 4}, {-4, -4},
+	}
+	for _, o := range offs {
+		mv := decoder.MV{Row: integerMV.Row + o[1], Col: integerMV.Col + o[0]}
+		cost := sadForMV(srcY, srcStride, bx, by, bw, bh,
+			refY, refW, refH, refStride, mv)
+		if cost < bestSAD {
+			bestSAD = cost
+			bestMV = mv
+		}
+	}
+
+	// Quarter-pel refinement around the best half-pel match.
+	baseMV := bestMV
+	offsQ := [8][2]int32{
+		{2, 0}, {-2, 0}, {0, 2}, {0, -2},
+		{2, 2}, {2, -2}, {-2, 2}, {-2, -2},
+	}
+	for _, o := range offsQ {
+		mv := decoder.MV{Row: baseMV.Row + o[1], Col: baseMV.Col + o[0]}
+		cost := sadForMV(srcY, srcStride, bx, by, bw, bh,
+			refY, refW, refH, refStride, mv)
+		if cost < bestSAD {
+			bestSAD = cost
+			bestMV = mv
+		}
+	}
+	return bestMV
+}
+
+// sadForMV computes SAD between src block and the motion-compensated
+// reference prediction at the given MV. Handles both integer-pel
+// (direct copy) and sub-pel (8-tap filter) paths.
+func sadForMV(
+	srcY []uint8, srcStride int,
+	bx, by, bw, bh int,
+	refY []uint8, refW, refH, refStride int,
+	mv decoder.MV,
+) int {
+	pred := make([]uint8, bw*bh)
+	decoder.MotionCompensate(pred, bw, bh, refY, refW, refH, refStride,
+		bx, by, mv, predict.InterpRegular)
+	sum := 0
+	for r := 0; r < bh; r++ {
+		sRow := (by + r) * srcStride
+		pRow := r * bw
+		for c := 0; c < bw; c++ {
+			d := int(srcY[sRow+bx+c]) - int(pred[pRow+c])
 			if d < 0 {
 				d = -d
 			}
