@@ -69,6 +69,11 @@ func DecodeAll(r io.Reader) ([]image.Image, []time.Duration, error) {
 		return nil, nil, fmt.Errorf("goavif: avis sequence header not found in primary item")
 	}
 
+	// Display dims from tkhd — used to crop the decoded frame when
+	// the encoder padded to a 64-multiple but tkhd records the
+	// original pixel rect.
+	dispW, dispH := isobmff.FindTkhdDisplaySize(ct.Moov)
+
 	frames := make([]image.Image, 0, len(samples))
 	durations := make([]time.Duration, 0, len(samples))
 	sawFallback := false
@@ -95,6 +100,15 @@ func DecodeAll(r io.Reader) ([]image.Image, []time.Duration, error) {
 		img, err := frameToImage(frame)
 		if err != nil {
 			return nil, nil, err
+		}
+		// Crop to tkhd display dims when they're smaller than the
+		// coded frame (i.e. the encoder padded to a 64-multiple).
+		if dispW > 0 && dispH > 0 {
+			cb := img.Bounds()
+			if int(dispW) < cb.Dx() || int(dispH) < cb.Dy() {
+				img = cropToRect(img, image.Rect(cb.Min.X, cb.Min.Y,
+					cb.Min.X+int(dispW), cb.Min.Y+int(dispH)))
+			}
 		}
 		frames = append(frames, img)
 		d := time.Duration(int64(s.Duration) * int64(time.Second) / int64(timescale))
@@ -136,7 +150,8 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 		return fmt.Errorf("goavif: EncodeAll: frame 0 is nil")
 	}
 	bounds := ref.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
+	origW, origH := bounds.Dx(), bounds.Dy()
+	width, height := origW, origH
 	if width < 4 || height < 4 {
 		return fmt.Errorf("goavif: EncodeAll: frame too small (%dx%d)", width, height)
 	}
@@ -145,10 +160,24 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 			return fmt.Errorf("goavif: EncodeAll: frame %d is nil", i)
 		}
 		fb := fr.Bounds()
-		if fb.Dx() != width || fb.Dy() != height {
+		if fb.Dx() != origW || fb.Dy() != origH {
 			return fmt.Errorf("goavif: EncodeAll: frame %d size %dx%d differs from %dx%d",
-				i, fb.Dx(), fb.Dy(), width, height)
+				i, fb.Dx(), fb.Dy(), origW, origH)
 		}
+	}
+	// Pad every frame to a 64-multiple (like goavif.Encode does) so
+	// the AVIS tile writers' alignment constraint is met regardless
+	// of the caller's input dimensions. The coded frame has padded
+	// dimensions; the container's tkhd/ispe/image-track dimensions
+	// still describe the original pixel rect.
+	if width%64 != 0 || height%64 != 0 {
+		padded := make([]image.Image, len(frames))
+		for i, fr := range frames {
+			padded[i] = padToMultiple(fr, 64)
+		}
+		frames = padded
+		ref = padded[0]
+		width, height = frames[0].Bounds().Dx(), frames[0].Bounds().Dy()
 	}
 
 	baseQ := uint8(32)
@@ -317,8 +346,8 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	}
 
 	container, err := isobmff.BuildSequence(isobmff.Sequence{
-		Width:              uint32(width),
-		Height:             uint32(height),
+		Width:              uint32(origW),
+		Height:             uint32(origH),
 		BitDepth:           sh.Color.BitDepth,
 		Monochrome:         sh.Color.Monochrome,
 		ChromaSubsamplingX: sh.Color.SubsamplingX,
