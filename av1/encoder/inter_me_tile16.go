@@ -167,6 +167,12 @@ func writeInterResidualBlock16(enc *entropy.Encoder,
 	qCtx := qIndexToCtx(baseQ)
 	WriteCoefficients(enc, coeffs, txSizeIdx, 0, qCtx, scan, nzMap, txW, txH)
 
+	// Monochrome: no chroma planes to code.
+	if srcU == nil || srcV == nil || refU == nil || refV == nil {
+		markInter(inter, miCol, miRow, bw, bh, miCols, miRows)
+		return
+	}
+
 	// Chroma (subsampling-aware).
 	cbw := bw >> uint(subX)
 	cbh := bh >> uint(subY)

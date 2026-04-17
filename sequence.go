@@ -162,9 +162,8 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	subX, subY := pickSubsampling(ref, opts)
 
 	// Inter prediction supports 8/10/12-bit at any supported chroma
-	// subsampling (4:2:0 / 4:2:2 / 4:4:4). Monochrome still falls back
-	// to intra-only (no mono inter path wired up today).
-	interEnabled := opts != nil && opts.InterEnabled && !monochrome
+	// subsampling (4:2:0 / 4:2:2 / 4:4:4) and monochrome.
+	interEnabled := opts != nil && opts.InterEnabled
 	keyInterval := 1
 	if interEnabled && opts != nil && opts.KeyFrameInterval > 1 {
 		keyInterval = opts.KeyFrameInterval
@@ -177,7 +176,9 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	switch {
 	case interEnabled:
 		seqPayload = obu.WriteSequenceHeaderAVIS(width, height, obu.SeqWriteOpts{
-			BitDepth: bitDepth, SubsamplingX: subX, SubsamplingY: subY,
+			BitDepth:     bitDepth,
+			SubsamplingX: subX, SubsamplingY: subY,
+			Monochrome: monochrome,
 		})
 	case monochrome && hbd:
 		seqPayload = obu.WriteMonoSequenceHeaderHBD(width, height, bitDepth)
@@ -195,6 +196,8 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 
 	var keyFramePayload []byte
 	switch {
+	case interEnabled && monochrome:
+		keyFramePayload = obu.WriteMonoAVISKeyFrameHeader(width, height, baseQ)
 	case interEnabled:
 		keyFramePayload = obu.WriteAVISKeyFrameHeader(width, height, baseQ)
 	case monochrome:
@@ -210,7 +213,11 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	var interFramePayload []byte
 	var interFh *obu.FrameHeader
 	if interEnabled {
-		interFramePayload = obu.WriteInterFrameHeader(width, height, baseQ)
+		if monochrome {
+			interFramePayload = obu.WriteMonoInterFrameHeader(width, height, baseQ)
+		} else {
+			interFramePayload = obu.WriteInterFrameHeader(width, height, baseQ)
+		}
 		interFh, _, err = obu.ParseFrameHeaderBytes(interFramePayload, sh, nil)
 		if err != nil {
 			return fmt.Errorf("goavif: EncodeAll: parse inter hdr: %w", err)
@@ -246,17 +253,29 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 			if width%64 != 0 || height%64 != 0 {
 				return fmt.Errorf("goavif: EncodeAll: inter mode requires 64-aligned dims, got %dx%d", width, height)
 			}
+			searchRange := meSearchRange(opts)
 			var tilePayload []byte
-			if hbd {
+			switch {
+			case hbd && monochrome:
+				srcY := imageToLuma16(fr, bitDepth)
+				tilePayload, err = encoder.WriteInterMETile16(width, height, interFh, sh,
+					srcY, nil, nil,
+					prevDec.Y16, nil, nil, prevDec.Width, prevDec.Height, searchRange)
+			case hbd:
 				srcY, srcU, srcV := imageToYUV16(fr, bitDepth, subX, subY)
 				tilePayload, err = encoder.WriteInterMETile16(width, height, interFh, sh,
 					srcY, srcU, srcV,
-					prevDec.Y16, prevDec.U16, prevDec.V16, prevDec.Width, prevDec.Height, 8)
-			} else {
+					prevDec.Y16, prevDec.U16, prevDec.V16, prevDec.Width, prevDec.Height, searchRange)
+			case monochrome:
+				srcY := imageToLuma(fr)
+				tilePayload, err = encoder.WriteInterMETile(width, height, interFh, sh,
+					srcY, nil, nil,
+					prevDec.Y, nil, nil, prevDec.Width, prevDec.Height, searchRange)
+			default:
 				srcY, srcU, srcV := imageToYUV(fr, subX, subY)
 				tilePayload, err = encoder.WriteInterMETile(width, height, interFh, sh,
 					srcY, srcU, srcV,
-					prevDec.Y, prevDec.U, prevDec.V, prevDec.Width, prevDec.Height, 8)
+					prevDec.Y, prevDec.U, prevDec.V, prevDec.Width, prevDec.Height, searchRange)
 			}
 			if err != nil {
 				return fmt.Errorf("goavif: EncodeAll: inter frame %d: %w", i, err)
@@ -385,3 +404,22 @@ func findMvhd(m *isobmff.Moov) *isobmff.Mvhd {
 // avoid unused-import warnings on bytes when the file doesn't end up
 // using it directly in some build configurations.
 var _ = bytes.NewReader
+
+// meSearchRange maps opts.Speed (0..10) to a ME search range. 0
+// (slowest) searches the widest window; 10 (fastest) searches a
+// tight window. Default (0 or unset) picks a middle value.
+func meSearchRange(opts *Options) int {
+	if opts == nil || opts.Speed <= 0 {
+		return 16
+	}
+	switch {
+	case opts.Speed >= 10:
+		return 4
+	case opts.Speed >= 7:
+		return 6
+	case opts.Speed >= 4:
+		return 10
+	default:
+		return 16
+	}
+}

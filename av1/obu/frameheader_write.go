@@ -38,6 +38,17 @@ func WriteMonoKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 // override bits are present, and iref-less refresh_frame_flags are
 // inferred rather than coded.
 func WriteAVISKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
+	return writeAVISKeyFrameHeaderWith(width, height, baseQIdx, false)
+}
+
+// WriteMonoAVISKeyFrameHeader emits an AVIS keyframe header for a
+// monochrome sequence. Differs from [WriteAVISKeyFrameHeader] only in
+// that quantization_params skips the chroma delta-Q flags.
+func WriteMonoAVISKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
+	return writeAVISKeyFrameHeaderWith(width, height, baseQIdx, true)
+}
+
+func writeAVISKeyFrameHeaderWith(width, height int, baseQIdx uint8, monochrome bool) []byte {
 	w := bitio.NewWriter()
 
 	// show_existing_frame = 0
@@ -73,7 +84,7 @@ func WriteAVISKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 	// Tile info.
 	writeTileInfoSingle(w, width, height)
 	// Quant / seg / delta_q / loop filter.
-	writeQuantParams(w, baseQIdx, false)
+	writeQuantParams(w, baseQIdx, monochrome)
 	// segmentation_enabled = 0
 	w.F(1, 0)
 	if baseQIdx > 0 {
@@ -81,7 +92,7 @@ func WriteAVISKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 	}
 	lossless := baseQIdx == 0
 	if !lossless {
-		writeLoopFilterParams(w, false)
+		writeLoopFilterParams(w, monochrome)
 	}
 	// cdef / lr skipped.
 	if !lossless {
@@ -109,6 +120,17 @@ func WriteAVISKeyFrameHeader(width, height int, baseQIdx uint8) []byte {
 //
 // baseQIdx sets base_q_index.
 func WriteInterFrameHeader(width, height int, baseQIdx uint8) []byte {
+	return writeInterFrameHeaderWith(width, height, baseQIdx, false)
+}
+
+// WriteMonoInterFrameHeader emits an AVIS inter frame header for a
+// monochrome sequence. Differs from [WriteInterFrameHeader] only in
+// that quantization_params skips the chroma delta-Q flags.
+func WriteMonoInterFrameHeader(width, height int, baseQIdx uint8) []byte {
+	return writeInterFrameHeaderWith(width, height, baseQIdx, true)
+}
+
+func writeInterFrameHeaderWith(width, height int, baseQIdx uint8, monochrome bool) []byte {
 	w := bitio.NewWriter()
 
 	// show_existing_frame = 0
@@ -159,7 +181,7 @@ func WriteInterFrameHeader(width, height int, baseQIdx uint8) []byte {
 	writeTileInfoSingle(w, width, height)
 
 	// Quant params.
-	writeQuantParams(w, baseQIdx, false)
+	writeQuantParams(w, baseQIdx, monochrome)
 
 	// segmentation_enabled (1) = 0
 	w.F(1, 0)
@@ -173,7 +195,7 @@ func WriteInterFrameHeader(width, height int, baseQIdx uint8) []byte {
 	// Loop filter params — skipped when lossless; we set all zero.
 	lossless := baseQIdx == 0
 	if !lossless {
-		writeLoopFilterParams(w, false)
+		writeLoopFilterParams(w, monochrome)
 	}
 
 	// CDEF / LR params: seq disables both → nothing coded.
