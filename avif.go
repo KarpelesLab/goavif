@@ -33,6 +33,19 @@ type Options struct {
 	ChromaSubsampling ChromaSubsampling
 	// Alpha, if true, includes the image's alpha channel as an auxiliary item.
 	Alpha bool
+	// InterEnabled, if true, enables inter-frame prediction for AVIS
+	// image sequences — frames other than keyframes are coded as
+	// INTER_FRAME against the previously decoded frame. Currently
+	// restricted to 8-bit 4:2:0 color sequences; monochrome / HBD
+	// fall back to the intra-only path. No effect on still-image
+	// encoding.
+	InterEnabled bool
+	// KeyFrameInterval is the number of frames between keyframes
+	// when InterEnabled is true. 0 or 1 means "every frame is a
+	// keyframe" (intra-only behavior). A value of N means frames
+	// 0, N, 2N, ... are keyframes. No effect when InterEnabled is
+	// false.
+	KeyFrameInterval int
 }
 
 // ChromaSubsampling identifies a YUV chroma sampling configuration.

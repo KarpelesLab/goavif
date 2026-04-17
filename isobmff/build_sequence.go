@@ -10,12 +10,19 @@ import (
 // its presentation duration in media timescale units.
 type SequenceFrame struct {
 	// AV1Bitstream is the complete self-contained AV1 byte stream for
-	// this frame. Each frame is treated as a sync sample (keyframe)
-	// since goavif's encoder is intra-only.
+	// this frame. A sync sample (IsSync=true) is a standalone
+	// keyframe; a non-sync sample is an inter-predicted frame whose
+	// decode depends on the preceding sample's reconstructed output.
 	AV1Bitstream []byte
 	// DurationTicks is the frame's presentation duration measured in
 	// [Sequence.Timescale] ticks.
 	DurationTicks uint32
+	// IsSync reports whether this frame is a sync sample (keyframe).
+	// When false, the frame is inter-predicted against the preceding
+	// frame and cannot be decoded in isolation. Frame 0 must always
+	// be a sync sample. For backward compatibility, a zero value
+	// (false) is treated as true for frame 0.
+	IsSync bool
 }
 
 // Sequence describes an AVIS image sequence encode: frame dimensions,
@@ -300,12 +307,16 @@ func buildSequenceMoov(s Sequence, sampleOffsets, sampleSizes []uint32, totalDur
 		Offsets:       append([]uint32(nil), sampleOffsets...),
 	}
 
-	// stss — every sample is a sync sample (intra-only). Spec allows
-	// omitting stss to mean "every sample is sync"; we emit an
-	// explicit listing to be unambiguous with players that look for it.
-	syncNums := make([]uint32, len(s.Frames))
-	for i := range syncNums {
-		syncNums[i] = uint32(i + 1)
+	// stss — lists only sync samples. Frame 0 is always a sync
+	// sample; later frames can be inter-predicted if SequenceFrame
+	// IsSync=false. Spec allows omitting stss to mean "every sample
+	// is sync"; we emit an explicit listing so players that look
+	// for it get unambiguous signaling.
+	syncNums := make([]uint32, 0, len(s.Frames))
+	for i, f := range s.Frames {
+		if i == 0 || f.IsSync {
+			syncNums = append(syncNums, uint32(i+1))
+		}
 	}
 	stss := &Stss{
 		FullBoxHeader: FullBoxHeader{Version: 0},

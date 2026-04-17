@@ -71,31 +71,20 @@ func DecodeAll(r io.Reader) ([]image.Image, []time.Duration, error) {
 
 	frames := make([]image.Image, 0, len(samples))
 	durations := make([]time.Duration, 0, len(samples))
-	sawNonSync := false
+	sawFallback := false
 	var prevFrame *decoder.Frame
 	for i, s := range samples {
 		if uint64(s.Offset)+uint64(s.Size) > uint64(len(data)) {
 			return nil, nil, fmt.Errorf("goavif: sample offset %d+%d out of range", s.Offset, s.Size)
 		}
-		// The decoder only implements intra-only frames today. Non-
-		// sync samples require inter prediction (Phase 5+); until that
-		// lands, repeat the previous frame for non-sync and flag the
-		// situation so callers can detect degraded output.
-		if !s.IsSync && i > 0 {
-			sawNonSync = true
-			frames = append(frames, frames[len(frames)-1])
-			durations = append(durations, time.Duration(int64(s.Duration)*int64(time.Second)/int64(timescale)))
-			continue
-		}
 		sampleBytes := data[s.Offset : s.Offset+uint64(s.Size)]
 		frame, err := decoder.DecodeWithRef(sampleBytes, seq, prevFrame)
 		if err != nil {
-			// The decoder may legitimately reject a sample flagged as
-			// sync if its internal frame header actually carries an
-			// inter frame (unusual but valid). Fall back to repeating
-			// the previous frame just like the non-sync branch.
+			// If an inter sample cannot be decoded (e.g. the inter
+			// branch hit an unsupported mode), repeat the previous
+			// frame and flag the degradation.
 			if errors.Is(err, decoder.ErrInterFrameUnsupported) && i > 0 {
-				sawNonSync = true
+				sawFallback = true
 				frames = append(frames, frames[len(frames)-1])
 				durations = append(durations, time.Duration(int64(s.Duration)*int64(time.Second)/int64(timescale)))
 				continue
@@ -111,7 +100,7 @@ func DecodeAll(r io.Reader) ([]image.Image, []time.Duration, error) {
 		d := time.Duration(int64(s.Duration) * int64(time.Second) / int64(timescale))
 		durations = append(durations, d)
 	}
-	if sawNonSync {
+	if sawFallback {
 		return frames, durations, ErrInterPredictionNotImplemented
 	}
 	return frames, durations, nil
@@ -165,11 +154,23 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	bitDepth := hbdBitDepth(ref, opts)
 	hbd := bitDepth > 8
 
+	// Inter prediction is only supported for 8-bit 4:2:0 color today.
+	// Fall back to the intra-only path for monochrome / HBD.
+	interEnabled := opts != nil && opts.InterEnabled && !monochrome && !hbd
+	keyInterval := 1
+	if interEnabled && opts != nil && opts.KeyFrameInterval > 1 {
+		keyInterval = opts.KeyFrameInterval
+	}
+
 	// Build the shared sequence header once. Every frame uses it,
 	// which means the av1C's ConfigOBUs can be the same across the
 	// whole sequence.
 	var seqPayload []byte
 	switch {
+	case interEnabled:
+		seqPayload = obu.WriteSequenceHeaderAVIS(width, height, obu.SeqWriteOpts{
+			BitDepth: 8, SubsamplingX: 1, SubsamplingY: 1,
+		})
 	case monochrome && hbd:
 		seqPayload = obu.WriteMonoSequenceHeaderHBD(width, height, bitDepth)
 	case monochrome:
@@ -184,15 +185,28 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 		return err
 	}
 
-	var framePayload []byte
-	if monochrome {
-		framePayload = obu.WriteMonoKeyFrameHeader(width, height, baseQ)
-	} else {
-		framePayload = obu.WriteKeyFrameHeader(width, height, baseQ)
+	var keyFramePayload []byte
+	switch {
+	case interEnabled:
+		keyFramePayload = obu.WriteAVISKeyFrameHeader(width, height, baseQ)
+	case monochrome:
+		keyFramePayload = obu.WriteMonoKeyFrameHeader(width, height, baseQ)
+	default:
+		keyFramePayload = obu.WriteKeyFrameHeader(width, height, baseQ)
 	}
-	fh, _, err := obu.ParseFrameHeaderBytes(framePayload, sh, nil)
+	keyFh, _, err := obu.ParseFrameHeaderBytes(keyFramePayload, sh, nil)
 	if err != nil {
 		return err
+	}
+
+	var interFramePayload []byte
+	var interFh *obu.FrameHeader
+	if interEnabled {
+		interFramePayload = obu.WriteInterFrameHeader(width, height, baseQ)
+		interFh, _, err = obu.ParseFrameHeaderBytes(interFramePayload, sh, nil)
+		if err != nil {
+			return fmt.Errorf("goavif: EncodeAll: parse inter hdr: %w", err)
+		}
 	}
 
 	seqOBU := obu.WrapOBU(1, seqPayload)
@@ -200,17 +214,59 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 	// Encode each frame.
 	const timescale = uint32(1000) // ms
 	seqFrames := make([]isobmff.SequenceFrame, 0, len(frames))
+	// prevDec holds the previously decoded frame when inter encoding;
+	// inter frames source their motion compensation from it.
+	var prevDec *decoder.Frame
 	for i, fr := range frames {
-		tilePayload, err := encodeFrameTile(width, height, fh, sh, fr, bitDepth, hbd, monochrome)
-		if err != nil {
-			return fmt.Errorf("goavif: EncodeAll: frame %d: %w", i, err)
+		isKey := !interEnabled || (i%keyInterval == 0)
+
+		var sampleBytes []byte
+		if isKey {
+			tilePayload, err := encodeFrameTile(width, height, keyFh, sh, fr, bitDepth, hbd, monochrome)
+			if err != nil {
+				return fmt.Errorf("goavif: EncodeAll: frame %d: %w", i, err)
+			}
+			frameBytes := append(append([]byte(nil), keyFramePayload...), tilePayload...)
+			frameOBU := obu.WrapOBU(6, frameBytes)
+			// Sync samples are self-contained: include the seq OBU so
+			// any sync sample can be decoded standalone.
+			sampleBytes = append(append([]byte(nil), seqOBU...), frameOBU...)
+		} else {
+			// Inter: run ME against prevDec's reconstructed planes.
+			srcY, srcU, srcV := imageToYUV420(fr)
+			// Pad the coded frame dims to a 64-multiple so the
+			// inter tile writer's 64-aligned constraint is met.
+			// For now require caller-supplied dims to already be
+			// 64-aligned in inter mode.
+			if width%64 != 0 || height%64 != 0 {
+				return fmt.Errorf("goavif: EncodeAll: inter mode requires 64-aligned dims, got %dx%d", width, height)
+			}
+			tilePayload, err := encoder.WriteInterMETile(width, height, interFh, sh,
+				srcY, srcU, srcV,
+				prevDec.Y, prevDec.U, prevDec.V, prevDec.Width, prevDec.Height, 8)
+			if err != nil {
+				return fmt.Errorf("goavif: EncodeAll: inter frame %d: %w", i, err)
+			}
+			frameBytes := append(append([]byte(nil), interFramePayload...), tilePayload...)
+			frameOBU := obu.WrapOBU(6, frameBytes)
+			sampleBytes = frameOBU
 		}
-		frameBytes := append(append([]byte(nil), framePayload...), tilePayload...)
-		frameOBU := obu.WrapOBU(6, frameBytes)
-		// Each sample is self-contained: include the seq OBU so any
-		// sample can be decoded standalone (matches the still-image
-		// path's item shape).
-		sampleBytes := append(append([]byte(nil), seqOBU...), frameOBU...)
+
+		// When inter is enabled, decode each sample so the next frame
+		// can reference it. Sync samples include the seq OBU; inter
+		// samples don't (they rely on the decoder state from sync).
+		if interEnabled {
+			var dec *decoder.Frame
+			if isKey {
+				dec, err = decoder.Decode(sampleBytes, sh)
+			} else {
+				dec, err = decoder.DecodeWithRef(sampleBytes, sh, prevDec)
+			}
+			if err != nil {
+				return fmt.Errorf("goavif: EncodeAll: re-decode frame %d: %w", i, err)
+			}
+			prevDec = dec
+		}
 
 		var delay time.Duration = 100 * time.Millisecond
 		if i < len(delays) {
@@ -223,6 +279,7 @@ func EncodeAll(w io.Writer, frames []image.Image, delays []time.Duration, opts *
 		seqFrames = append(seqFrames, isobmff.SequenceFrame{
 			AV1Bitstream:  sampleBytes,
 			DurationTicks: ticks,
+			IsSync:        isKey,
 		})
 	}
 

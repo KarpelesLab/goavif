@@ -436,11 +436,30 @@ Follow-ups (outside the "baseline" goal of this phase):
       Added writeGolomb / readGolomb helpers (uniform 50/50 bypass
       bits; length zeros + terminating 1 + length low bits of
       value+1).
-- [ ] Motion estimation + sub-pel refinement
+- [x] Motion estimation (integer-pel): `encoder.SearchMV` does a full
+      SAD search over a configurable window; `encoder.DiamondSearchMV`
+      uses an 8-point diamond descent for faster ME on large windows.
+      Both clamp the reference access to the frame edge (matching the
+      decoder's MotionCompensate behavior) so MVs pointing past the
+      frame are legal. `encoder.WriteInterMETile` runs ME per 32×32
+      block and emits the best MV + residual — ready to slot in as
+      the inter-frame encoder for AVIS sequences.
+- [x] AVIS inter-frame encoding end-to-end: `Options.InterEnabled` +
+      `Options.KeyFrameInterval` opt the AVIS encoder into real inter
+      compression. Frame 0 is always a sync keyframe; subsequent
+      frames within the keyframe interval use `WriteInterMETile`
+      against the previously decoded frame. `SequenceFrame.IsSync`
+      threads per-frame sync flags through the stss table builder.
+      `DecodeAll` now routes each sample through `DecodeWithRef` so
+      inter samples are reconstructed with motion compensation.
+      Gradient round-trip across a 3-frame inter sequence recovers
+      per-frame shade within ±10.
+- [ ] Sub-pel motion estimation refinement (currently integer-pel only)
 - [ ] Transform / mode / partition RDO search (currently hard-coded
       DC_PRED + SPLIT + DCT_DCT everywhere)
 - [ ] Rate control (CBR / VBR / constant quality)
-- [ ] Encoder support for 10/12-bit and image sequences
+- [ ] Encoder support for 10/12-bit image sequences (inter path is 8-bit
+      only today; 10/12-bit sequences fall back to intra-only keyframes)
 - [ ] Optional film-grain estimation
 
 ## Phase 5 — Inter prediction (in progress)
