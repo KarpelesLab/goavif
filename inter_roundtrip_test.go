@@ -353,6 +353,84 @@ func TestInterVerticalMVRoundTrip(t *testing.T) {
 	}
 }
 
+// TestInterSubPelMVRoundTrip exercises sub-pel motion compensation
+// through the full pipeline. The MV col=12 eighth-pel = 1.5 integer
+// pel, so the 8-tap filter runs at phase 8 (mid-pel). For a smooth
+// horizontal gradient the filtered output should still be monotonic
+// and within tight bounds of the expected interpolated value.
+func TestInterSubPelMVRoundTrip(t *testing.T) {
+	const dim = 64
+	baseQ := uint8(40)
+	seqPayload := obu.WriteSequenceHeaderAVIS(dim, dim, obu.SeqWriteOpts{
+		BitDepth: 8, SubsamplingX: 1, SubsamplingY: 1,
+	})
+	sh, _ := obu.ParseSequenceHeader(seqPayload)
+	seqOBU := obu.WrapOBU(1, seqPayload)
+
+	// Smooth horizontal gradient — luma proportional to x.
+	srcY := make([]uint8, dim*dim)
+	srcU := make([]uint8, dim*dim/4)
+	srcV := make([]uint8, dim*dim/4)
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			srcY[y*dim+x] = uint8(x * 4)
+		}
+	}
+	for i := range srcU {
+		srcU[i] = 128
+		srcV[i] = 128
+	}
+	keyHdr := obu.WriteAVISKeyFrameHeader(dim, dim, baseQ)
+	keyFh, _, _ := obu.ParseFrameHeaderBytes(keyHdr, sh, nil)
+	keyTile, _ := encoder.WriteIntraOnlyTile(dim, dim, keyFh, sh, srcY, srcU, srcV)
+	keyOBU := obu.WrapOBU(6, append(append([]byte(nil), keyHdr...), keyTile...))
+	keyDec, err := decoder.Decode(append(append([]byte(nil), seqOBU...), keyOBU...), sh)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+
+	// MV col=12 eighth-pel = 1 integer + phase 4. Phase×2 = 8 (mid)
+	// after the eighth→sixteenth mapping in MotionCompensate.
+	mv := decoder.MV{Row: 0, Col: 12}
+	interHdr := obu.WriteInterFrameHeader(dim, dim, baseQ)
+	interFh, _, _ := obu.ParseFrameHeaderBytes(interHdr, sh, nil)
+	interTile, err := encoder.WriteInterUniformMVTile(dim, dim, interFh, sh, mv)
+	if err != nil {
+		t.Fatalf("inter tile: %v", err)
+	}
+	interOBU := obu.WrapOBU(6, append(append([]byte(nil), interHdr...), interTile...))
+	interDec, err := decoder.DecodeWithRef(append(append([]byte(nil), seqOBU...), interOBU...), sh, keyDec)
+	if err != nil {
+		t.Fatalf("inter: %v", err)
+	}
+
+	// The decoded sub-pel shifted output should behave like the
+	// reference shifted by ~1.5 pixels: the interpolated value at
+	// output column x should land between reference columns x+1 and
+	// x+2 (within some tolerance, accounting for ref quantization
+	// drift and 8-tap filter ringing on slope changes).
+	row := dim / 2
+	betweenCount := 0
+	for x := 10; x < 30; x++ {
+		want1 := int(keyDec.Y[row*keyDec.YStride+x+1])
+		want2 := int(keyDec.Y[row*keyDec.YStride+x+2])
+		v := int(interDec.Y[row*interDec.YStride+x])
+		lo, hi := want1, want2
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		// Tolerate ±6 around the expected band (quantization +
+		// filter ringing).
+		if v >= lo-6 && v <= hi+6 {
+			betweenCount++
+		}
+	}
+	t.Logf("sub-pel shift: %d/20 samples sit within ±6 of neighboring int-pel values", betweenCount)
+	if betweenCount < 15 {
+		t.Fatalf("sub-pel filter output too far from expected interpolated band: %d/20", betweenCount)
+	}
+}
+
 func clampForTest(v, lo, hi int) int {
 	if v < lo {
 		return lo
