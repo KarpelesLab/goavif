@@ -481,9 +481,45 @@ Follow-ups (outside the "baseline" goal of this phase):
       `WriteInterMETile`, so every ME-driven inter block now benefits
       from sub-pel precision. Test case: a 0.5-pel half-blended
       gradient recovers col=4 (half-pel) from col=0 integer ME.
-- [ ] Transform / mode / partition RDO search (currently hard-coded
-      DC_PRED + SPLIT + DCT_DCT everywhere)
-- [ ] Rate control (CBR / VBR / constant quality)
+- [ ] Transform / mode / partition RDO search with proper bit-cost
+      modeling (intra path does per-block mode selection by SAD;
+      inter path does per-block ME by SAD; true R-D optimization is
+      a follow-up)
+- [x] Rate control — target-size: `Options.TargetBytes` triggers a
+      Q-bisection loop inside `Encode` that lands the output within
+      ±10% of the requested size (or the closest bounded result
+      when the target can't be hit). 8 iterations from Q=50 with
+      bisection. No effect on AVIS / grid paths yet.
+- [x] Speed tier: `Options.Speed` (0..10) trades encode time for
+      inter-frame compression by shrinking the ME search range
+      (0 → ±16 pel, 10 → ±4 pel).
+- [x] Subsampling-aware inter encoder: `writeInterResidualBlock`
+      / `writeInterResidualBlock16` thread (subX, subY) through the
+      chroma path so 4:2:0 / 4:2:2 / 4:4:4 all work end-to-end.
+- [x] Monochrome inter encoder: grayscale AVIS sequences can be
+      inter-coded. `WriteMonoAVISKeyFrameHeader` /
+      `WriteMonoInterFrameHeader` emit mono frame headers; the inter
+      block writer short-circuits the chroma loop when src/ref U/V
+      are nil.
+- [x] AVIS arbitrary-dim input: `EncodeAll` pre-pads frames to the
+      next 64-multiple; the container's tkhd records the original
+      dims. `DecodeAll` parses tkhd via `isobmff.FindTkhdDisplaySize`
+      and crops the decoded frame back to the tkhd rect.
+- [x] Film grain emission: `Options.FilmGrainStrength` turns on
+      `film_grain_params_present` in the seq header and emits a
+      minimal film_grain_params block (single-point luma scaling,
+      chroma-from-luma, ar_coeff_lag=0) in the keyframe header.
+      Decoder synthesizes and overlays the grain using the existing
+      filmgrain package. A flat-grey input changes in 997/1024
+      sampled pixels when grain is enabled. Fixed a bug in
+      `filmgrain.BuildLUT` where single-point LUTs left the
+      control-point slot at 0 instead of the point's scale.
+- [x] Inter-frame encode perf: pooled the MC pad buffer and the
+      ME SAD pred buffer (sync.Pool); unrolled the 8-tap filter in
+      `predict.InterpSubPel`; added a clamp-free fast path in
+      `encoder.sadAtClamped` when the ref block is fully in-bounds.
+      Combined: 5-frame 256×256 inter encode benchmark drops from
+      225 ms → 117 ms (~48% faster), alloc count 32K → 28K.
 - [x] HBD inter encoder path: `encoder.WriteInterMETile16` mirrors
       the 8-bit `WriteInterMETile` but operates on uint16 planes —
       `SearchMV16` / `DiamondSearchMV16` / `SubPelRefineMV16` do ME on
@@ -495,7 +531,9 @@ Follow-ups (outside the "baseline" goal of this phase):
       produces AVIS sequences with 10/12-bit inter frames; 3-frame
       gradient round-trips at center-sample drift ~1500 on 16-bit
       scale (≈ 1.5%).
-- [ ] Optional film-grain estimation
+- [ ] Optional film-grain *estimation* (the emission path is done;
+      the remaining work is detecting noise characteristics from
+      the input and choosing strength / AR coefs automatically)
 
 ## Phase 5 — Inter prediction (in progress)
 
@@ -591,6 +629,12 @@ work before inter frames actually decode to correct pixels.
       - Net: 64×64 encode ~27300 allocs → 502 allocs (~54× less),
         256×256 encode ~415000 allocs → 3412 allocs (~121× less).
         Wall time roughly halved.
+- [x] Second-pass cleanup on the inter path: pooled the
+      (w+7)×(h+7) pad buffer inside MotionCompensate /
+      MotionCompensate16, pooled the ME pred scratch in
+      sadForMV / sadForMV16, unrolled the 8-tap filter in
+      InterpSubPel, added a clamp-free fast path in sadAtClamped.
+      5-frame 256×256 inter encode went from 225 ms to 117 ms.
 - [ ] SIMD asm (`*_amd64.s`, `*_arm64.s`) under build tags without API change
 - [ ] Parallel tile decode/encode
 
