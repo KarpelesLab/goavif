@@ -1,5 +1,10 @@
 ## goavif
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/KarpelesLab/goavif.svg)](https://pkg.go.dev/github.com/KarpelesLab/goavif)
+[![test](https://github.com/KarpelesLab/goavif/actions/workflows/test.yml/badge.svg)](https://github.com/KarpelesLab/goavif/actions/workflows/test.yml)
+[![Coverage Status](https://coveralls.io/repos/github/KarpelesLab/goavif/badge.svg?branch=master)](https://coveralls.io/github/KarpelesLab/goavif?branch=master)
+[![Go Report Card](https://goreportcard.com/badge/github.com/KarpelesLab/goavif)](https://goreportcard.com/report/github.com/KarpelesLab/goavif)
+
 Pure-Go AVIF image codec — container and AV1 bitstream. No cgo, no third-party
 runtime dependencies in the core codec path.
 
