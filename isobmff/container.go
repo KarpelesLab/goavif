@@ -42,11 +42,14 @@ func ParseContainer(data []byte) (*Container, error) {
 		if err != nil {
 			return nil, err
 		}
-		plen := int64(hdr.PayloadLen())
+		plen := hdr.PayloadLen()
 		if hdr.ExtendsToEnd {
-			plen = int64(r.Len())
+			plen = uint64(r.Len())
 		}
-		payload := make([]byte, plen)
+		if plen > uint64(r.Len()) {
+			return nil, fmt.Errorf("%w: %q payload %d exceeds remaining %d", ErrTruncated, hdr.Type, plen, r.Len())
+		}
+		payload := make([]byte, int(plen))
 		if _, err := io.ReadFull(r, payload); err != nil {
 			return nil, fmt.Errorf("%w: %q payload: %w", ErrTruncated, hdr.Type, err)
 		}
